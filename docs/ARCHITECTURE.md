@@ -1,7 +1,7 @@
 # AurumX Architecture
 
-Status: Phase 1 (foundation) implemented. This document describes the target
-architecture and marks what exists today.
+Status: Phases 1 (foundation) and 2 (deterministic agent layer) implemented.
+This document describes the target architecture and marks what exists today.
 
 ## 1. Layer model
 
@@ -29,9 +29,9 @@ layer talks to a broker.**
 └──────────────────────────┬───────────────────────────────────────┘
                            │ AgentResult (direction, signal_strength, reasons…)
 ┌──────────────────────────▼───────────────────────────────────────┐
-│              DECISION ENGINE (Phase 3)                           │
+│              DECISION ENGINE (Phase 2 core done)                 │
 │  Regime detection → regime-weighted evidence → BUY/SELL/HOLD     │
-│  + explanations + decision journal (app/storage)                 │
+│  (app/decision) — Phase 3 adds config, journal, entry/SL/TP      │
 └──────────────────────────┬───────────────────────────────────────┘
                            │ proposed trade (entry/SL/TP/risk)
 ┌──────────────────────────▼───────────────────────────────────────┐
@@ -64,6 +64,27 @@ layer talks to a broker.**
 | Market snapshot | `app/market/market_state.py` | `trading_data_ok` data-quality gate, session inference |
 | Data service | `app/market/data_service.py` | orchestrates the above; server-clock-offset correction |
 | Diagnostics | `scripts/diagnostics.py` | read-only health checks (launcher's "Run Diagnostics") |
+
+## 2b. What exists today (Phase 2 — agent layer)
+
+| Component | File | Notes |
+|---|---|---|
+| Agent contract | `app/agents/base.py` | `AgentResult` with provenance (`reasons`, `features`, `warnings`, `data_quality`, `source_time`); bad-tick guard |
+| Shared feature layer | `app/agents/features.py` | EMA/RSI/MACD/ROC/ATR/BB/ADX, Wilder smoothing, ATR-buffered comparisons, fractal swings with 2-candle confirmation + prominence filter, BOS/CHOCH events, closed-candles only |
+| Multi-timeframe context | `app/agents/context.py` | M15/H1/H4 with explicit roles (ENTRY/STRUCTURE/MACRO); features computed once per timeframe |
+| TrendAgent | `app/agents/trend.py` | EMA20/50/200 + ADX + slope + H4 + structure evidence table; E1 + ≥2 confirmations required |
+| MomentumAgent | `app/agents/momentum.py` | regime-conditional (trend/range modes); exhaustion + conflict guards; no naive RSI reversals |
+| StructureAgent | `app/agents/structure.py` | confirmed swings only, BOS/CHOCH, invalidation levels, documented confirmation delay |
+| LiquidityAgent | `app/agents/liquidity.py` | sweeps/wick rejections/breakouts/failed breakouts vs H1 swings, prev-day levels, M15 extremes; volume-confirmed where volume exists |
+| VolatilityAgent | `app/agents/volatility.py` | LOW/NORMAL/HIGH/EXTREME + expansion state; contextual, never directional |
+| MeanReversionAgent | `app/agents/mean_reversion.py` | RANGE-gated, L1/L2/L3 gates, no martingale/averaging/DCA by construction |
+| MacroAgent | `app/agents/macro.py` | provider protocol, blackout window, NEUTRAL/NO_DATA without a source, never fabricates |
+| Agent registry | `app/agents/registry.py` | ordered, enable/disable, failure-isolated (raising agent → INVALID NEUTRAL) |
+| Regime engine | `app/decision/regime.py` | TREND/RANGE/volatility/UNCERTAIN + per-agent relevance matrix (HIGH 1.25 / NORMAL 1.0 / REDUCED 0.5 / DISABLED 0) |
+| Synthesis contract | `app/decision/synthesis.py` | deterministic reference aggregation; disagreement preserved (supporting/opposing/neutral/disabled + conflicts) |
+
+See `docs/AGENTS.md` for the full agent reference (evidence tables, gates,
+limitations, examples).
 
 ## 3. Key design decisions
 

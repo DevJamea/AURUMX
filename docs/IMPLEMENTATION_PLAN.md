@@ -138,8 +138,8 @@ The spec's tree is followed with two adaptations (allowed by §6):
 | Phase | Scope | Status |
 |---|---|---|
 | **1 — Foundation** | structure, config, structured logging, events, domain models, `BrokerInterface`, `MT5Broker` (read-only), symbol discovery + verification, tick/candle validation, market snapshot, diagnostics script, test suite | **DONE — all tests pass** |
-| 2 — Agents | Trend, Momentum, Structure, Liquidity, Volatility, Mean Reversion, Macro interface + synthesis agent interface; agent registry & weights config | pending |
-| 3 — Decision engine | regime detection, weighted evidence, consensus, explanations, decision journal storage | pending |
+| 2 — Agents | Trend, Momentum, Structure, Liquidity, Volatility, Mean Reversion, Macro interface + synthesis agent interface; agent registry & weights config | **DONE — 203 new tests, all passing** |
+| 3 — Decision engine | regime detection, weighted evidence, consensus, explanations, decision journal storage | core built in Phase 2 (`app/decision`); config/journal pending |
 | 4 — Risk | hard risk gate, position sizing, limits, daily loss, spread/exposure checks, kill switch | pending |
 | 5 — Execution | order validation → risk check → `order_check` → send → verify → reconcile; BE, partial close, trailing, pending orders; dry-run + paper broker | pending |
 | 6 — Backtesting | no-look-ahead simulator, metrics, reports, walk-forward splits, agent performance tracking | pending |
@@ -168,6 +168,38 @@ The spec's tree is followed with two adaptations (allowed by §6):
 - [x] Unit + integration tests, all passing (**156 passed**), no MT5 terminal
       required (deterministic fake MT5 module, injectable clocks)
 - [x] Ruff lint clean
+
+### Phase 2 acceptance criteria (all met)
+
+- [x] Seven agents + MacroAgent interface + Synthesis interface; agents touch
+      no MT5/credentials/orders/positions/LLM/internet/global state
+      (statically enforced by source-hygiene tests)
+- [x] Common contract: name, direction, `signal_strength` (never
+      probability/confidence), timeframe, reasons, features, warnings, data
+      quality, decision-candle + snapshot timestamps
+- [x] M15/H1/H4 roles explicit and tested (ENTRY/STRUCTURE/MACRO)
+- [x] TrendAgent: EMA20/50/200, ADX, slope, HH/HL; EMA20>EMA50 alone never
+      signals; bullish/bearish/sideways/insufficient tests
+- [x] MomentumAgent: no naive RSI<30→BUY; regime-conditional; exhausted-trend,
+      range and conflicting-indicator tests
+- [x] StructureAgent: confirmed swings only, BOS/CHOCH, documented 2-candle
+      confirmation delay, explicit look-ahead (prefix-consistency) tests
+- [x] LiquidityAgent (no order-book claims): sweep/rejection/breakout/failed
+      breakout patterns, session levels, volume degradation tests
+- [x] VolatilityAgent: LOW/NORMAL/HIGH/EXTREME, expansion/contraction,
+      contextual (never directional on high volatility)
+- [x] MeanReversionAgent: RANGE-only gates, no martingale/averaging/DCA,
+      stays neutral in trends (tested), reversal confirmation required
+- [x] MacroAgent interface: NEUTRAL/NO_DATA provenance, blackout warning,
+      never fabricates
+- [x] Regime detection with per-agent relevance (not equal averaging)
+- [x] Synthesis contract with disagreement preserved end-to-end
+- [x] Determinism, purity and wall-clock independence verified per agent
+- [x] Adversarial matrix: NaN/inf/dup/unordered/gapped/short/zero-volume/
+      spike/constant/flat/abnormal-ATR — all fail safe (bad-tick guard added)
+- [x] Backtest-compatible (no MT5/wall-clock/network anywhere in the layer)
+- [x] docs/AGENTS.md reference written; ARCHITECTURE.md updated
+- [x] **359 tests passing** (156 Phase-1 + 203 Phase-2), ruff clean
 
 ### Validation semantics note
 

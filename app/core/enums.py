@@ -166,3 +166,61 @@ class ValidationLevel(StrEnum):
 
     ERROR = "ERROR"
     WARNING = "WARNING"
+
+
+class AgentDirection(StrEnum):
+    """Directional lean produced by an analysis agent.
+
+    ``signal_strength`` (0..1) is a *deterministic evidence score*, never a
+    probability — it is not calibrated against outcome frequencies.
+    """
+
+    BUY = "BUY"
+    SELL = "SELL"
+    NEUTRAL = "NEUTRAL"
+
+
+class DataQuality(StrEnum):
+    """Data-quality status attached to every agent result."""
+
+    OK = "OK"
+    DEGRADED = "DEGRADED"          # usable, but some evidence is missing/stale
+    INSUFFICIENT = "INSUFFICIENT"  # not enough candles for the agent's logic
+    INVALID = "INVALID"            # data unusable (failed validation, etc.)
+    NO_DATA = "NO_DATA"            # no source configured (e.g. macro provider)
+
+
+class SwingKind(StrEnum):
+    HIGH = "HIGH"
+    LOW = "LOW"
+
+
+class SwingLabel(StrEnum):
+    """Structural label of a swing relative to its predecessor."""
+
+    HH = "HH"
+    HL = "HL"
+    LH = "LH"
+    LL = "LL"
+    NONE = "NONE"  # first swing of its kind — no predecessor to compare
+
+
+class StructureEventType(StrEnum):
+    BOS_UP = "BOS_UP"          # break of structure, bullish continuation
+    BOS_DOWN = "BOS_DOWN"      # break of structure, bearish continuation
+    CHOCH_UP = "CHOCH_UP"      # change of character to bullish
+    CHOCH_DOWN = "CHOCH_DOWN"  # change of character to bearish
+
+
+class VolatilityState(StrEnum):
+    EXPANDING = "EXPANDING"
+    CONTRACTING = "CONTRACTING"
+    STABLE = "STABLE"
+
+
+class TimeframeRole(StrEnum):
+    """Explicit role of a timeframe in the multi-timeframe context."""
+
+    MACRO = "MACRO"        # e.g. H4: primary/macro trend context
+    STRUCTURE = "STRUCTURE"  # e.g. H1: market structure & directional context
+    ENTRY = "ENTRY"        # e.g. M15: entry timing / local setups

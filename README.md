@@ -103,8 +103,8 @@ app/
 ├── core/       config, enums, domain models, events, exceptions, structured logging
 ├── brokers/    BrokerInterface + MT5Broker (the ONLY MetaTrader5 importer)
 ├── market/     symbol discovery, tick/candle validation, market snapshots
-├── agents/     specialized analysis agents            (Phase 2)
-├── decision/   regime + weighted decision engine      (Phase 3)
+├── agents/     7 deterministic analysis agents + feature layer (Phase 2, done)
+├── decision/   regime engine + synthesis contract     (Phase 2 core done)
 ├── risk/       hard risk gate                         (Phase 4)
 ├── execution/  order lifecycle                        (Phase 5)
 ├── backtest/   no-look-ahead simulator + walk-forward (Phase 6)
@@ -122,6 +122,18 @@ The implementation is not "done because it runs". Every phase ships with
 tests; MT5-dependent code is tested against a deterministic fake terminal
 (`tests/fakes/mt5_fake.py`) so the whole pipeline — discovery, validation,
 freshness gating, clock-offset correction — is verified without Windows.
+
+**Phase 2 (agent layer)** adds the deterministic analysis stack: seven agents
+(trend, momentum, structure, liquidity, volatility, mean-reversion, macro
+interface), a regime engine and a synthesis contract — all pure functions of
+the market snapshot.  Verified properties include: determinism (same input →
+same result), purity (analysis never mutates the snapshot), wall-clock
+independence, no-look-ahead structure signals (prefix-consistency proofs),
+disagreement preservation in synthesis, and a full adversarial matrix (NaN /
+infinities / duplicate, unordered or gapped series / spikes / constant prices /
+zero volume / bad ticks — all fail safe to NEUTRAL).  See
+[`docs/AGENTS.md`](docs/AGENTS.md) for the agent reference.
+
 Edge cases covered today include: zero ticks, inverted quotes, stale ticks,
 future-stamped ticks, missing timeframes, broken symbol metadata, invisible
 symbols, real-account warnings, credential redaction and restart-safe
