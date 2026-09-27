@@ -26,8 +26,20 @@ import pytest
 APP = Path("app")
 MT5_ADAPTER = Path("app/brokers/mt5.py")
 
-#: modules allowed to call raw MT5 execution functions (adapter + test fake)
-ORDER_CALL_ALLOWED = {"app/brokers/mt5.py"}
+
+def posix(path: Path) -> str:
+    """Cross-platform canonical path form for comparisons.
+
+    ``Path.rglob`` yields platform-native separators (``app\\brokers\\mt5.py``
+    on Windows), while every allowed-path literal in this module is written
+    POSIX-style.  All path comparisons go through this helper so the
+    assertions behave identically on Windows and Unix.
+    """
+    return path.as_posix()
+
+
+#: modules allowed to call raw MT5 execution functions (adapter only)
+ORDER_CALL_ALLOWED = {MT5_ADAPTER.as_posix()}
 
 EXECUTION_SOURCES = sorted(APP.joinpath("execution").glob("*.py"))
 CONTROL_SOURCES = sorted(APP.joinpath("control").rglob("*.py"))
@@ -73,7 +85,7 @@ class TestOrderSendIsolation:
         for source in _all_app_sources():
             tree = ast.parse(source.read_text())
             if forbidden in _calls(tree):
-                offenders.append(str(source))
+                offenders.append(posix(source))
         assert set(offenders) <= ORDER_CALL_ALLOWED, (
             f"{forbidden}() called outside the MT5 adapter: {offenders}"
         )
@@ -83,11 +95,11 @@ class TestOrderSendIsolation:
         execution interface."""
         offenders = []
         for source in _all_app_sources():
-            if str(source) == "app/execution/service.py":
+            if posix(source) == "app/execution/service.py":
                 continue
             tree = ast.parse(source.read_text())
             if "place_market_order" in _calls(tree):
-                offenders.append(str(source))
+                offenders.append(posix(source))
         assert offenders == [], f"place_market_order called outside the service: {offenders}"
 
     def test_execution_layer_imports_broker_interface_only(self):
@@ -109,7 +121,7 @@ class TestOrderSendIsolation:
                 if isinstance(node, ast.Import) and any(
                     alias.name == "MetaTrader5" for alias in node.names
                 ):
-                    offenders.append(str(source))
+                    offenders.append(posix(source))
                 if (
                     isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Attribute)
@@ -118,7 +130,7 @@ class TestOrderSendIsolation:
                     and isinstance(node.args[0], ast.Constant)
                     and node.args[0].value == "MetaTrader5"
                 ):
-                    offenders.append(str(source))
+                    offenders.append(posix(source))
         assert offenders == [], f"direct MetaTrader5 imports outside the adapter: {offenders}"
         # and the adapter really is the lazy importer
         adapter_source = Path("app/brokers/mt5.py").read_text()
@@ -177,8 +189,9 @@ class TestControlPlaneBoundaries:
     def test_only_the_composition_root_builds_mt5broker(self):
         """``MT5Broker(...)`` construction is allowed only in the adapter's
         own classmethod (from_config) and the control-plane entry point."""
-        builders = [str(p) for p in _all_app_sources() if "MT5Broker(" in p.read_text()]
-        assert set(builders) <= {"app/brokers/mt5.py", "app/control/__main__.py"}, builders
+        allowed = {MT5_ADAPTER.as_posix(), "app/control/__main__.py"}
+        builders = [posix(p) for p in _all_app_sources() if "MT5Broker(" in p.read_text()]
+        assert set(builders) <= allowed, builders
 
     @pytest.mark.parametrize("source", CONTROL_SOURCES, ids=lambda p: p.name)
     def test_control_never_calls_mt5_functions(self, source: Path):
