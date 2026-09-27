@@ -120,9 +120,100 @@ _ORDER_TYPES: dict[int, OrderType] = {
     ORDER_TYPE_SELL_STOP_LIMIT: OrderType.SELL_STOP_LIMIT,
 }
 
+# ---- Trade action / retcode constants (numeric fallbacks; the real
+# package's constants are preferred at runtime via getattr — spec §7A.5:
+# never invent numeric meanings, fail closed on unknown codes) ----------
+TRADE_ACTION_DEAL = 1
+ORDER_TIME_GTC = 0
+
+TRADE_RETCODE_REQUOTE = 10004
+TRADE_RETCODE_REJECT = 10006
+TRADE_RETCODE_CANCEL = 10007
+TRADE_RETCODE_PLACED = 10008
+TRADE_RETCODE_DONE = 10009
+TRADE_RETCODE_DONE_PARTIAL = 10010
+TRADE_RETCODE_ERROR = 10011
+TRADE_RETCODE_TIMEOUT = 10012
+TRADE_RETCODE_INVALID = 10013
+TRADE_RETCODE_INVALID_VOLUME = 10014
+TRADE_RETCODE_INVALID_PRICE = 10015
+TRADE_RETCODE_INVALID_STOPS = 10016
+TRADE_RETCODE_TRADE_DISABLED = 10017
+TRADE_RETCODE_MARKET_CLOSED = 10018
+TRADE_RETCODE_NO_MONEY = 10019
+TRADE_RETCODE_PRICE_CHANGED = 10020
+TRADE_RETCODE_PRICE_OFF = 10021
+TRADE_RETCODE_INVALID_EXPIRATION = 10022
+TRADE_RETCODE_ORDER_CHANGED = 10023
+TRADE_RETCODE_TOO_MANY_REQUESTS = 10024
+TRADE_RETCODE_NO_CHANGES = 10025
+TRADE_RETCODE_SERVER_DISABLES_AT = 10026
+TRADE_RETCODE_CLIENT_DISABLES_AT = 10027
+TRADE_RETCODE_LOCKED = 10028
+TRADE_RETCODE_FROZEN = 10029
+TRADE_RETCODE_INVALID_FILL = 10030
+TRADE_RETCODE_CONNECTION = 10031
+TRADE_RETCODE_ONLY_REAL = 10032
+TRADE_RETCODE_LIMIT_ORDERS = 10033
+TRADE_RETCODE_LIMIT_VOLUME = 10034
+
+#: (constant name, numeric fallback, broker-agnostic category).
+#: Categories are consumed by the execution service to distinguish
+#: definite rejections from ambiguous states (timeout/error -> UNKNOWN).
+_RETCODE_INFO: list[tuple[str, int, str]] = [
+    ("TRADE_RETCODE_REQUOTE", TRADE_RETCODE_REQUOTE, "requote"),
+    ("TRADE_RETCODE_REJECT", TRADE_RETCODE_REJECT, "broker_rejected"),
+    ("TRADE_RETCODE_CANCEL", TRADE_RETCODE_CANCEL, "broker_rejected"),
+    ("TRADE_RETCODE_PLACED", TRADE_RETCODE_PLACED, "placed_unconfirmed"),
+    ("TRADE_RETCODE_DONE", TRADE_RETCODE_DONE, "accepted"),
+    ("TRADE_RETCODE_DONE_PARTIAL", TRADE_RETCODE_DONE_PARTIAL, "partial"),
+    ("TRADE_RETCODE_ERROR", TRADE_RETCODE_ERROR, "error"),
+    ("TRADE_RETCODE_TIMEOUT", TRADE_RETCODE_TIMEOUT, "timeout"),
+    ("TRADE_RETCODE_INVALID", TRADE_RETCODE_INVALID, "invalid_request"),
+    ("TRADE_RETCODE_INVALID_VOLUME", TRADE_RETCODE_INVALID_VOLUME, "invalid_volume"),
+    ("TRADE_RETCODE_INVALID_PRICE", TRADE_RETCODE_INVALID_PRICE, "invalid_price"),
+    ("TRADE_RETCODE_INVALID_STOPS", TRADE_RETCODE_INVALID_STOPS, "invalid_stops"),
+    ("TRADE_RETCODE_TRADE_DISABLED", TRADE_RETCODE_TRADE_DISABLED, "trade_disabled"),
+    ("TRADE_RETCODE_MARKET_CLOSED", TRADE_RETCODE_MARKET_CLOSED, "market_closed"),
+    ("TRADE_RETCODE_NO_MONEY", TRADE_RETCODE_NO_MONEY, "no_money"),
+    ("TRADE_RETCODE_PRICE_CHANGED", TRADE_RETCODE_PRICE_CHANGED, "requote"),
+    ("TRADE_RETCODE_PRICE_OFF", TRADE_RETCODE_PRICE_OFF, "requote"),
+    ("TRADE_RETCODE_INVALID_EXPIRATION", TRADE_RETCODE_INVALID_EXPIRATION, "invalid_request"),
+    ("TRADE_RETCODE_ORDER_CHANGED", TRADE_RETCODE_ORDER_CHANGED, "invalid_request"),
+    ("TRADE_RETCODE_TOO_MANY_REQUESTS", TRADE_RETCODE_TOO_MANY_REQUESTS, "too_many_requests"),
+    ("TRADE_RETCODE_NO_CHANGES", TRADE_RETCODE_NO_CHANGES, "no_changes"),
+    ("TRADE_RETCODE_SERVER_DISABLES_AT", TRADE_RETCODE_SERVER_DISABLES_AT, "invalid_request"),
+    ("TRADE_RETCODE_CLIENT_DISABLES_AT", TRADE_RETCODE_CLIENT_DISABLES_AT, "invalid_request"),
+    ("TRADE_RETCODE_LOCKED", TRADE_RETCODE_LOCKED, "locked"),
+    ("TRADE_RETCODE_FROZEN", TRADE_RETCODE_FROZEN, "frozen"),
+    ("TRADE_RETCODE_INVALID_FILL", TRADE_RETCODE_INVALID_FILL, "invalid_fill"),
+    ("TRADE_RETCODE_CONNECTION", TRADE_RETCODE_CONNECTION, "connection"),
+    ("TRADE_RETCODE_ONLY_REAL", TRADE_RETCODE_ONLY_REAL, "only_real"),
+    ("TRADE_RETCODE_LIMIT_ORDERS", TRADE_RETCODE_LIMIT_ORDERS, "limit_orders"),
+    ("TRADE_RETCODE_LIMIT_VOLUME", TRADE_RETCODE_LIMIT_VOLUME, "limit_volume"),
+]
+
+
+def _retcode_table(mt5: Any) -> dict[int, tuple[str, str]]:
+    """retcode -> (symbolic name, category), resolved from the installed
+    package's constants when available (fallback: the numeric values above)."""
+    table: dict[int, tuple[str, str]] = {}
+    for name, fallback, category in _RETCODE_INFO:
+        code = getattr(mt5, name, None)
+        table[int(code) if isinstance(code, int) else fallback] = (name, category)
+    return table
+
+
+def _classify_retcode(mt5: Any, retcode: int) -> tuple[str, str]:
+    """Classify a retcode.  Unknown codes -> ("UNKNOWN_<code>", "unknown")
+    and are treated as failures everywhere (fail closed, spec §7A.5)."""
+    name, category = _retcode_table(mt5).get(retcode, (f"UNKNOWN_{retcode}", "unknown"))
+    return name, category
+
+
 _EXECUTION_PHASE_5_MESSAGE = (
-    "MT5 order execution is implemented in Phase 5 (execution layer). "
-    "Phases 1-4 are read-only by construction."
+    "MT5 order execution beyond market orders is implemented in a later "
+    "phase (position management).  Phase 5 implements place_market_order only."
 )
 
 
@@ -521,11 +612,141 @@ class MT5Broker(BrokerInterface):
             )
         return orders
 
+    def is_trading_allowed(self) -> bool | None:
+        mt5 = self._require()
+        try:
+            terminal = mt5.terminal_info()
+        except Exception:  # pragma: no cover - terminal-level failure
+            return None
+        if terminal is None:
+            return None
+        return bool(_get(terminal, "trade_allowed", False))
+
     # ------------------------------------------------------------------
-    # execution — HARD STUBS until Phase 5 (intentional safety property)
+    # execution (Phase 5) — market orders only.  THE ONLY place in the
+    # codebase where order_check/order_send are called; everything above
+    # this layer goes through BrokerInterface / the execution service.
     # ------------------------------------------------------------------
     def place_market_order(self, request: MarketOrderRequest) -> OrderResult:
-        raise ExecutionNotImplementedError(_EXECUTION_PHASE_5_MESSAGE)
+        """Controlled market order: order_check FIRST, order_send only if
+        the check passes, explicit retcode verification (spec §7A.3-§7A.5).
+
+        Fail-closed contract:
+
+        * no connection / no price / no check result / no send result
+          -> ``accepted=False`` (never a guessed success);
+        * the check must return retcode 0 or TRADE_RETCODE_DONE to pass
+          (both are success signals in the wild; anything else blocks the
+          send);
+        * unknown send retcodes classify as ``unknown`` and fail closed;
+        * exceptions never propagate as success — they become a structured
+          ``OrderResult`` with ``phase`` + ``category`` set.
+        """
+        mt5 = self._require()
+
+        tick = mt5.symbol_info_tick(request.symbol)
+        if tick is None or not _get(tick, "bid", 0.0) or not _get(tick, "ask", 0.0):
+            return OrderResult(
+                accepted=False, retcode=None, phase="check", category="no_price",
+                message=f"no current price for {request.symbol} — refusing to send",
+            )
+        price = float(tick.ask if request.direction is Direction.LONG else tick.bid)
+
+        order: dict[str, Any] = {
+            "action": int(getattr(mt5, "TRADE_ACTION_DEAL", TRADE_ACTION_DEAL)),
+            "symbol": request.symbol,
+            "volume": float(request.volume),
+            "type": int(
+                getattr(mt5, "ORDER_TYPE_BUY", ORDER_TYPE_BUY)
+                if request.direction is Direction.LONG
+                else getattr(mt5, "ORDER_TYPE_SELL", ORDER_TYPE_SELL)
+            ),
+            "price": price,
+            "sl": float(request.sl) if request.sl else 0.0,
+            "tp": float(request.tp) if request.tp else 0.0,
+            "deviation": int(request.deviation_points),
+            "magic": int(request.magic),
+            "comment": request.comment or "AURUMX",
+            "type_time": int(getattr(mt5, "ORDER_TIME_GTC", ORDER_TIME_GTC)),
+        }
+        if request.type_filling is not None:
+            order["type_filling"] = int(request.type_filling)
+
+        # ---- order_check: a failed check MUST prevent order_send ----------
+        try:
+            check = mt5.order_check(order)
+        except Exception as exc:  # noqa: BLE001 - broker-level failure
+            return OrderResult(
+                accepted=False, retcode=None, phase="check", category="error",
+                message=f"order_check raised: {exc}", raw={"order": order},
+            )
+        if check is None:
+            return OrderResult(
+                accepted=False, retcode=None, phase="check", category="unknown",
+                message="order_check returned no data — failing closed", raw={"order": order},
+            )
+        check_retcode = int(_get(check, "retcode", -1))
+        done_code = int(getattr(mt5, "TRADE_RETCODE_DONE", TRADE_RETCODE_DONE))
+        if check_retcode not in (0, done_code):
+            name, category = _classify_retcode(mt5, check_retcode)
+            log.warning(
+                "order_check refused the request", event="MT5_ORDER_CHECK_FAILED",
+                symbol=request.symbol, retcode=check_retcode, retcode_name=name,
+            )
+            return OrderResult(
+                accepted=False, retcode=check_retcode, retcode_description=name,
+                phase="check", category=category,
+                message=f"order_check failed: {name} ({check_retcode})",
+                raw={"order": order},
+            )
+        log.info(
+            "order_check passed", event="MT5_ORDER_CHECKED",
+            symbol=request.symbol, volume=request.volume,
+        )
+
+        # ---- order_send: only after a passed check -------------------------
+        try:
+            result = mt5.order_send(order)
+        except Exception as exc:  # noqa: BLE001 - broker-level failure
+            return OrderResult(
+                accepted=False, retcode=None, phase="send", category="error",
+                message=f"order_send raised: {exc}", raw={"order": order},
+            )
+        if result is None:
+            return OrderResult(
+                accepted=False, retcode=None, phase="send", category="unknown",
+                message="order_send returned no data — execution state unknown",
+                raw={"order": order},
+            )
+
+        retcode = int(_get(result, "retcode", -1))
+        name, category = _classify_retcode(mt5, retcode)
+        accepted = retcode in (
+            done_code,
+            int(getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", TRADE_RETCODE_DONE_PARTIAL)),
+        )
+        volume = _get(result, "volume", None)
+        fill_price = _get(result, "price", None)
+        order_ticket = _get(result, "order", None)
+        deal_ticket = _get(result, "deal", None)
+        log.info(
+            "order_send returned", event="MT5_ORDER_SENT",
+            symbol=request.symbol, retcode=retcode, retcode_name=name,
+            accepted=accepted, order=order_ticket,
+        )
+        return OrderResult(
+            accepted=accepted,
+            retcode=retcode,
+            retcode_description=name,
+            phase="send",
+            category=category,
+            ticket=int(order_ticket) if order_ticket else None,
+            deal_ticket=int(deal_ticket) if deal_ticket else None,
+            price=float(fill_price) if fill_price else None,
+            volume=float(volume) if volume else None,
+            message=f"{name} ({retcode})",
+            raw={"order": order},
+        )
 
     def place_pending_order(self, request: PendingOrderRequest) -> OrderResult:
         raise ExecutionNotImplementedError(_EXECUTION_PHASE_5_MESSAGE)

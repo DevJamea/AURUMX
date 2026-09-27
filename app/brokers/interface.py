@@ -128,3 +128,9 @@ class BrokerInterface(ABC):
     def server_time(self) -> datetime | None:
         """Broker server time if the implementation can provide it."""
         return None
+
+    def is_trading_allowed(self) -> bool | None:
+        """Whether the terminal/account allows trading right now (e.g. MT5
+        AutoTrading enabled).  ``None`` = unknown — consumers must treat
+        unknown as NOT allowed (fail-closed evidence, spec §54)."""
+        return None

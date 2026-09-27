@@ -375,6 +375,10 @@ class MarketOrderRequest(_FiniteModel):
     sl: float | None = None
     tp: float | None = None
     deviation_points: int = 20
+    #: MT5 filling mode (ORDER_FILLING_FOK/IOC/RETURN).  None = omit and
+    #: let the terminal default apply (Phase 5: brokers disagree; a wrong
+    #: explicit choice is a guaranteed 10030 rejection).
+    type_filling: int | None = None
     comment: str = ""
     magic: int = 0
 
@@ -396,11 +400,25 @@ class PendingOrderRequest(_FiniteModel):
 class OrderResult(_FiniteModel):
     """Normalized broker response.  ``accepted`` is true only when the broker
     confirmed execution (e.g. ``TRADE_RETCODE_DONE``); a sent request is never
-    assumed successful without verification (spec §30)."""
+    assumed successful without verification (spec §30).
+
+    Phase-5 provenance fields:
+
+    * ``phase``  — which broker stage produced this verdict:
+      ``"check"`` (order_check refused — nothing was sent) or ``"send"``
+      (order_send returned).  Empty for pre-broker failures.
+    * ``category`` — broker-agnostic classification of the retcode
+      (``accepted`` / ``partial`` / ``invalid_stops`` / ``market_closed`` /
+      ``no_money`` / ``requote`` / ``timeout`` / ``unknown`` / …).  Produced
+      by the MT5 adapter from the actual package constants; unknown retcodes
+      classify as ``unknown`` and fail closed.
+    """
 
     accepted: bool = False
     retcode: int | None = None
     retcode_description: str = ""
+    phase: str = ""
+    category: str = ""
     ticket: int | None = None
     deal_ticket: int | None = None
     price: float | None = None

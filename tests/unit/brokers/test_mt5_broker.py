@@ -277,19 +277,15 @@ class TestPortfolio:
         assert orders[0].time_expiration is None
 
 
-class TestExecutionStubs:
-    """Phases 1–4 are read-only by construction: every execution method must
-    raise, and the fake module's order_send must never even be reachable."""
+class TestExecutionSurface:
+    """Phase 5: market orders are implemented; position management stays
+    stubbed (later phase).  The fake module's execution functions remain
+    unreachable unless a test explicitly opts in."""
 
-    def test_all_execution_methods_raise(self, broker: MT5Broker):
-        request = MarketOrderRequest(
-            symbol="XAUUSD", direction=Direction.LONG, volume=0.1
-        )
+    def test_position_management_still_raises(self, broker: MT5Broker):
         pending = PendingOrderRequest(
             symbol="XAUUSD", order_type=OrderType.BUY_LIMIT, volume=0.1, price_open=2600.0
         )
-        with pytest.raises(ExecutionNotImplementedError):
-            broker.place_market_order(request)
         with pytest.raises(ExecutionNotImplementedError):
             broker.place_pending_order(pending)
         with pytest.raises(ExecutionNotImplementedError):
@@ -301,13 +297,15 @@ class TestExecutionStubs:
         with pytest.raises(ExecutionNotImplementedError):
             broker.cancel_order(201)
 
-    def test_fake_order_send_is_never_called(self, fake_mt5):
-        import pytest as _pytest
-
+    def test_market_order_fails_closed_on_read_only_fake(self, fake_mt5):
+        """The fake's read-only safety net must never turn into a success:
+        order_check raising -> structured fail-closed result, nothing sent."""
         broker = MT5Broker(mt5_module=fake_mt5)
         broker.connect()
-        with _pytest.raises(ExecutionNotImplementedError):
-            broker.place_market_order(
-                MarketOrderRequest(symbol="XAUUSD", direction=Direction.LONG, volume=0.1)
-            )
-        # FakeMT5.order_send itself raises AssertionError if ever reached.
+        result = broker.place_market_order(
+            MarketOrderRequest(symbol="XAUUSD", direction=Direction.LONG, volume=0.1)
+        )
+        assert result.accepted is False
+        assert result.phase == "check"
+        assert result.category == "error"
+        assert fake_mt5.order_sends == []  # order_send never reached

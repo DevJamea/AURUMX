@@ -52,6 +52,32 @@ ORDER_TYPE_SELL_LIMIT = 3
 ORDER_TYPE_BUY_STOP = 4
 ORDER_TYPE_SELL_STOP = 5
 
+ORDER_TYPE_BUY = 0
+ORDER_TYPE_SELL = 1
+TRADE_ACTION_DEAL = 1
+ORDER_TIME_GTC = 0
+
+# trade retcodes (same values as the real package)
+TRADE_RETCODE_REQUOTE = 10004
+TRADE_RETCODE_REJECT = 10006
+TRADE_RETCODE_CANCEL = 10007
+TRADE_RETCODE_PLACED = 10008
+TRADE_RETCODE_DONE = 10009
+TRADE_RETCODE_DONE_PARTIAL = 10010
+TRADE_RETCODE_ERROR = 10011
+TRADE_RETCODE_TIMEOUT = 10012
+TRADE_RETCODE_INVALID = 10013
+TRADE_RETCODE_INVALID_VOLUME = 10014
+TRADE_RETCODE_INVALID_PRICE = 10015
+TRADE_RETCODE_INVALID_STOPS = 10016
+TRADE_RETCODE_TRADE_DISABLED = 10017
+TRADE_RETCODE_MARKET_CLOSED = 10018
+TRADE_RETCODE_NO_MONEY = 10019
+TRADE_RETCODE_PRICE_CHANGED = 10020
+TRADE_RETCODE_PRICE_OFF = 10021
+TRADE_RETCODE_INVALID_FILL = 10030
+TRADE_RETCODE_CONNECTION = 10031
+
 RATES_DTYPE = np.dtype(
     [
         ("time", "i8"),
@@ -100,6 +126,17 @@ FakeOrder = namedtuple(
     [
         "ticket", "symbol", "type", "volume_current", "price_open", "sl", "tp",
         "time_setup", "time_expiration", "comment", "magic",
+    ],
+)
+FakeOrderCheckResult = namedtuple(
+    "FakeOrderCheckResult",
+    ["retcode", "balance", "equity", "margin", "margin_free", "profit", "comment"],
+)
+FakeOrderSendResult = namedtuple(
+    "FakeOrderSendResult",
+    [
+        "retcode", "deal", "order", "volume", "price", "bid", "ask",
+        "comment", "request_id", "retcode_external", "request",
     ],
 )
 
@@ -210,6 +247,11 @@ class FakeMT5:
         terminal: FakeTerminalInfo | None = None,
         init_result: bool = True,
         last_error_value: tuple[int, str] = (0, "no error"),
+        execution_enabled: bool = False,
+        check_retcode: int | None = None,
+        send_retcode: int | None = None,
+        send_exception: Exception | None = None,
+        auto_open_position: bool = True,
     ) -> None:
         self.symbols: dict[str, FakeSymbolInfo] = {s.name: s for s in (symbols or [])}
         self.rates: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -227,6 +269,14 @@ class FakeMT5:
         self.shutdown_called = False
         self._initialized = False
         self._next_ticket = 900001
+        # ---- Phase-5 execution simulation (opt-in; read-only by default) --
+        self.execution_enabled = execution_enabled
+        self.check_retcode = check_retcode
+        self.send_retcode = send_retcode
+        self.send_exception = send_exception
+        self.auto_open_position = auto_open_position
+        self.order_checks: list[dict[str, Any]] = []
+        self.order_sends: list[dict[str, Any]] = []
 
     # ---- lifecycle ------------------------------------------------------
     def initialize(
@@ -326,11 +376,99 @@ class FakeMT5:
             return ()
         return tuple(o for o in self.orders if symbol is None or o.symbol == symbol)
 
-    # ---- execution (not used in Phase 1) --------------------------------------
-    def order_send(self, request: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError(
-            "FakeMT5.order_send must never be called in Phases 1-4: "
-            "execution is stubbed until Phase 5."
+    # ---- execution (Phase 5; read-only safety net unless opted in) --------
+    def _require_execution_enabled(self, func: str) -> None:
+        if not self.execution_enabled:
+            raise AssertionError(
+                f"FakeMT5.{func} must never be called without "
+                "execution_enabled=True: read-only tests must stay read-only. "
+                "Phase-5 execution tests opt in explicitly."
+            )
+
+    def order_check(self, request: dict[str, Any]) -> FakeOrderCheckResult:
+        """Simulated MT5 order_check.  Default: basic sanity validation;
+        `check_retcode` overrides the verdict for failure-injection tests."""
+        self._require_execution_enabled("order_check")
+        self.order_checks.append(dict(request))
+        if self.check_retcode is not None:
+            return FakeOrderCheckResult(
+                retcode=self.check_retcode, balance=self.account.balance,
+                equity=self.account.equity, margin=self.account.margin,
+                margin_free=self.account.margin_free, profit=0.0, comment="",
+            )
+        retcode = 0
+        symbol = request.get("symbol")
+        if symbol not in self.symbols:
+            retcode = TRADE_RETCODE_INVALID
+        elif not (request.get("volume", 0.0) or 0.0) > 0:
+            retcode = TRADE_RETCODE_INVALID_VOLUME
+        elif request.get("action") != TRADE_ACTION_DEAL:
+            retcode = TRADE_RETCODE_INVALID
+        return FakeOrderCheckResult(
+            retcode=retcode, balance=self.account.balance,
+            equity=self.account.equity, margin=self.account.margin,
+            margin_free=self.account.margin_free, profit=0.0,
+            comment="" if retcode == 0 else "check failed",
+        )
+
+    def order_send(self, request: dict[str, Any]) -> FakeOrderSendResult:
+        """Simulated MT5 order_send.  Records every send; on success opens
+        a matching FakePosition (unless `auto_open_position` is False) so
+        verification/reconciliation can observe the resulting state.
+        Never fabricates identifiers on failure paths."""
+        self._require_execution_enabled("order_send")
+        if self.send_exception is not None:
+            raise self.send_exception
+        self.order_sends.append(dict(request))
+        retcode = self.send_retcode if self.send_retcode is not None else TRADE_RETCODE_DONE
+
+        order_ticket = 0
+        deal_ticket = 0
+        volume = float(request.get("volume", 0.0) or 0.0)
+        price = float(request.get("price", 0.0) or 0.0)
+        bid = self.tick.bid if self.tick else 0.0
+        ask = self.tick.ask if self.tick else 0.0
+
+        if retcode in (TRADE_RETCODE_DONE, TRADE_RETCODE_DONE_PARTIAL):
+            order_ticket = self._next_ticket
+            self._next_ticket += 1
+            deal_ticket = self._next_ticket
+            self._next_ticket += 1
+            if retcode is not None and retcode == TRADE_RETCODE_DONE_PARTIAL:
+                volume = round(volume / 2.0, 2) or volume
+            position_type = (
+                ORDER_TYPE_BUY if request.get("type") == ORDER_TYPE_BUY else ORDER_TYPE_SELL
+            )
+            if self.auto_open_position and request.get("action") == TRADE_ACTION_DEAL:
+                self.positions.append(
+                    FakePosition(
+                        ticket=order_ticket,
+                        symbol=str(request.get("symbol", "")),
+                        type=position_type,
+                        volume=volume,
+                        price_open=price,
+                        price_current=price,
+                        sl=float(request.get("sl", 0.0) or 0.0),
+                        tp=float(request.get("tp", 0.0) or 0.0),
+                        profit=0.0,
+                        swap=0.0,
+                        time=(self.tick.time if self.tick else 0),
+                        comment=str(request.get("comment", "")),
+                        magic=int(request.get("magic", 0) or 0),
+                    )
+                )
+        return FakeOrderSendResult(
+            retcode=retcode,
+            deal=deal_ticket or 0,
+            order=order_ticket or 0,
+            volume=volume,
+            price=price,
+            bid=bid,
+            ask=ask,
+            comment="",
+            request_id=0,
+            retcode_external=0,
+            request=dict(request),
         )
 
     # ---- test helpers -----------------------------------------------------------
