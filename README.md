@@ -36,7 +36,7 @@ DRY_RUN=true
 | 2 | Analysis agents (trend, momentum, structure, liquidity, volatility, mean-reversion, macro) | ✅ **complete — 359 tests passing** |
 | 3 | Decision engine: deterministic gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal (+ hardening: explicit TP/RR semantics, strict H4 policy, gate classification, Phase-4 RiskGate contract) | ✅ **complete — 587 tests passing; proposal-only, no execution** |
 | 4 | Hard risk gate, kill switch, exposure limits, emergency stop | ✅ **complete — 789 tests passing; approve/reject only, no execution** |
-| 5 | Execution (orders, BE, partial close, trailing, pending orders) | planned |
+| 5 | MT5 execution (market orders), DRY_RUN, DEMO guard, reconciliation, Windows control plane | ✅ **complete — 1048 tests passing; offline-verified; real accounts blocked** (position management: later phase) |
 | 6 | Backtesting + walk-forward | planned |
 | 7 | Dashboard (React) + FastAPI | planned |
 | 8 | Windows launcher | planned |
@@ -56,9 +56,9 @@ Analysis Agents                        ← never see a broker, never trade
         ↓
 Decision Engine  (weighted evidence + market regime)
         ↓
-Risk Gate        (hard gate — APPROVED/REJECTED/EMERGENCY_STOP, not a vote)
+Risk Gate        (hard gate — APPROVED/REJECTED/EMERGENCY_STOP, not a vote; done)
         ↓
-Execution Service                      ← only layer allowed to trade
+Execution Service                      ← only layer allowed to trade (Phase 5 done)
         ↓
 Broker Adapter (MT5)
 ```
@@ -106,7 +106,8 @@ app/
 ├── agents/     7 deterministic analysis agents + feature layer (Phase 2, done)
 ├── decision/   regime, synthesis, gates, proposals, journal  (Phases 2–3 done)
 ├── risk/       sizing + risk state + gate contract · HardRiskGate 18 checks (Phase 4 done)
-├── execution/  order lifecycle                        (Phase 5)
+├── execution/  contracts + service + journal + reconciliation (Phase 5 done)
+├── control/    engine runtime + local control API + GUI     (Phase 5 done)
 ├── backtest/   no-look-ahead simulator + walk-forward (Phase 6)
 ├── storage/    decision journal (SQLite, done) → PostgreSQL (later)
 ├── worker/     trading loop + health monitor          (Phase 4+)
@@ -162,6 +163,34 @@ Edge cases covered today include: zero ticks, inverted quotes, stale ticks,
 future-stamped ticks, missing timeframes, broken symbol metadata, invisible
 symbols, real-account warnings, credential redaction and restart-safe
 configuration guards.
+
+### Phase 5 — execution + control plane (complete)
+
+The execution layer turns a gate-APPROVED proposal into a controlled MT5
+market order — or a provably order-free DRY_RUN simulation — and verifies
+what actually happened against the broker:
+
+- `app/execution` — `ExecutionRequest` (verbatim from the approved
+  proposal, deterministic ids), `ExecutionService` (approval verification,
+  independent local validation, DRY_RUN, DEMO-guarded MT5 path with
+  `order_check` before `order_send`, explicit retcode verification, state
+  verification before `FILLED`, no retries), reconciliation
+  (`MATCHED / MISSING_IN_MT5 / MISSING_IN_JOURNAL / MISMATCH / UNKNOWN`,
+  mismatch halts execution until explicitly resolved), and the execution
+  journal with the full correlation chain.
+- `app/control` — the local Windows control plane: engine runtime,
+  localhost control API + GUI (`python -m app.control`).  The GUI talks
+  only to the API; there is no endpoint that can send an order.
+- `order_send` lives exclusively in `app/brokers/mt5.py` (the only
+  MetaTrader5 importer) — AST-enforced.
+- Real accounts are refused unconditionally; demo execution requires
+  `TRADING_ENABLED=true`, `DRY_RUN=false`, the confirmation phrase and a
+  runtime-verified DEMO account.
+
+See [`docs/EXECUTION.md`](docs/EXECUTION.md) for the full reference,
+including how to run the opt-in real-MT5 demo test
+(`tests/live_mt5`, `AURUMX_LIVE_MT5=1`).  Phase 5 does **not** authorize
+real-money trading.
 
 ## License
 

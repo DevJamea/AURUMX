@@ -1,11 +1,12 @@
 # AurumX Architecture
 
 Status: Phases 1 (foundation), 2 (deterministic agent layer), 3
-(decision engine, proposals, journal — hardened) and 4 (hard risk gate:
-18 checks, kill switch, emergency stop, risk events) implemented.
-Phase 4 is proposal-only: it approves/rejects, it never executes.
-This document describes the target architecture and marks
-what exists today.
+(decision engine, proposals, journal — hardened), 4 (hard risk gate)
+and 5 (execution layer: MT5 adapter with order_check/order_send,
+DRY_RUN, DEMO-guarded execution, reconciliation, Windows control plane)
+implemented.  Phase 5 executes market orders on verified DEMO accounts
+only — it does not authorize real-money trading.  This document
+describes the target architecture and marks what exists today.
 
 ## 1. Layer model
 
@@ -46,9 +47,9 @@ layer talks to a broker.**
 └──────────────────────────┬───────────────────────────────────────┘
                            │ APPROVED / REJECTED / EMERGENCY_STOP · never modifies proposals
 ┌──────────────────────────▼───────────────────────────────────────┐
-│              EXECUTION SERVICE (Phase 5)                         │
-│  validate → risk check → order_check → send → verify → reconcile │
-│  + position management (BE, partial close, trailing)             │
+│              EXECUTION SERVICE (Phase 5 — implemented)                         │
+│  ExecutionService: approval check → validation → DRY_RUN or MT5 │
+│  (order_check → order_send → verify). No retries. Mgmt: later.             │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
                      Broker Adapter → MT5
@@ -110,9 +111,23 @@ limitations, examples).
 | Kill switch / emergency stop | `app/risk/kill_switch.py` | `KillSwitchState` + `EmergencyStopState` (STANDBY/ACTIVE/TRIGGERED/RESET_REQUIRED), `KillSwitchStore` Protocol (future GUI/VPS persistence), `halt_flags()` bridge to `AccountState` |
 | Risk events | `app/risk/events.py` | `RISK_APPROVED` / `RISK_REJECTED` / `EMERGENCY_STOP` / `KILL_SWITCH_ACTIVE` data objects — no Telegram/HTTP (receivers stamp time) |
 
-See `docs/DECISIONS.md` for the Phase-3 decision record, and
-`docs/RISK_GATE.md` for the Phase-4 gate reference (all 18 checks,
-precedence, fail-closed table, kill switch, limitations). (HOLD vs ABORT
+## 2d. What exists today (Phase 5 — execution + control plane)
+
+| Component | File | Notes |
+|---|---|---|
+| Execution contracts | `app/execution/contracts.py` | `ExecutionRequest` (verbatim from an approved proposal, deterministic ids, correlation chain), `ExecutionResult` (9-status taxonomy; UNKNOWN is never success), documented `AURUMX_MAGIC` |
+| Execution service | `app/execution/service.py` | the ONLY caller of broker execution methods: risk-decision verification, mode gates, independent local validation, DRY_RUN simulation, DEMO-guarded MT5 path, state verification before FILLED; no retries |
+| Execution journal | `app/execution/journal.py` | `ExecutionRecord` + in-memory store; honest statuses, full correlation chain |
+| Reconciliation | `app/execution/reconciliation.py` | MATCHED / MISSING_IN_MT5 / MISSING_IN_JOURNAL / MISMATCH / UNKNOWN with documented tolerances; `ReconciliationGuard` halts execution on unresolved mismatches (explicit audited acknowledgement) |
+| Execution events | `app/execution/events.py` | EXECUTION_* / RECONCILIATION_* / CONTROL_* codes on the existing `EventBus` |
+| MT5 execution adapter | `app/brokers/mt5.py` | `place_market_order`: order_check BEFORE order_send, retcode classification from the installed package constants (unknown → fail closed); the only `order_check`/`order_send` call site in the codebase |
+| Control plane | `app/control/` | `EngineControl` (audited start/stop + persistent halts), `EngineRuntime` (full-stack composition; evaluate_cycle is analysis-only), `LocalControlAPI` (localhost JSON API + static GUI; **no execution endpoint**), `python -m app.control` entry point |
+
+See `docs/EXECUTION.md` for the full Phase-5 reference (execution
+architecture, DRY_RUN proof, demo configuration, retcode handling,
+reconciliation, control-plane boundaries, live-MT5 test instructions),
+`docs/RISK_GATE.md` for the Phase-4 gate reference, and
+`docs/DECISIONS.md` for the Phase-3 decision record. (HOLD vs ABORT
 semantics, threshold rationale, SL/TP methodology, fingerprinting,
 determinism guarantees, known limitations).
 
@@ -154,9 +169,14 @@ frame of reference. Known limitation: a server clock moving *backwards*
 * Unsafe configurations raise `UnsafeConfigurationError` on construction and
   on mutation (`validate_assignment=True`): live trading without the exact
   confirmation phrase cannot exist as an object.
-* Execution methods on `MT5Broker` raise `ExecutionNotImplementedError` until
-  Phase 5 — no code path in Phases 1–4 can send an order, even accidentally.
-  The test fake's `order_send` also asserts if reached.
+* Execution on `MT5Broker` is limited to `place_market_order` (Phase 5);
+  position management (modify/close/partial/cancel/pending) still raises
+  `ExecutionNotImplementedError`.  The test fake's execution functions
+  assert unless a test explicitly opts in (`execution_enabled=True`), so
+  read-only tests stay read-only.
+* Real (non-demo) accounts are refused by the execution service before any
+  broker call; demo execution additionally requires the config-level
+  confirmation phrase AND the runtime DEMO verification.
 * Unknown broker enum values map to the safe side (unknown symbol trade mode →
   `DISABLED`, unknown account mode → `REAL` so real-account alarms fire).
 

@@ -336,6 +336,54 @@ The hard risk gate — an independent barrier between the decision layer and
 - [x] **Phase 4 does NOT execute trades** — gate output is data; execution
       remains Phase 5
 
+### Phase 5 acceptance criteria
+
+The execution layer + Windows control plane.  Full reference:
+`docs/EXECUTION.md`.  Verdict: **offline proof complete; real-MT5 demo
+verification pending** (requires a Windows MT5 terminal — the sandbox
+environment has none; the opt-in harness is `tests/live_mt5` with
+`AURUMX_LIVE_MT5=1`).
+
+- [x] **MT5 execution isolated behind the adapter**: `order_check`/
+      `order_send` appear only in `app/brokers/mt5.py`
+      `place_market_order` — AST-enforced across `app/**`
+- [x] **order_check precedes order_send**; a failed check provably
+      prevents the send (fake-terminal call-order tests)
+- [x] **Retcodes explicitly verified** using the installed package's
+      constants (numeric fallbacks documented); unknown retcodes fail
+      closed; every category tested (DONE, PARTIAL, REJECT, INVALID*,
+      MARKET_CLOSED, NO_MONEY, REQUOTE, TIMEOUT, unknown)
+- [x] **DRY_RUN never calls order_send** — proven by call-counting at
+      unit, service and integration level; DRY_RUN uses the same pipeline
+      (request construction, validation, risk verification, journal) and
+      fabricates no broker identifiers
+- [x] **Demo execution explicitly opt-in**: TRADING_ENABLED + DRY_RUN=
+      false + REAL_TRADING_CONFIRMED phrase + runtime-verified DEMO
+      account; real accounts blocked unconditionally; no single boolean
+      bypasses the chain
+- [x] **Reconciliation** detects MATCHED / MISSING_IN_MT5 /
+      MISSING_IN_JOURNAL / MISMATCH / UNKNOWN with documented tolerances;
+      mismatches halt execution until explicitly resolved (audited);
+      nothing silently repaired or auto-adopted
+- [x] **Unknown execution state is never success** — accepted-but-
+      unverified fills are UNKNOWN, not FILLED; journal accuracy pinned
+- [x] **Proposal immutable** through execution; request derived verbatim
+      (§16 consistency tests: symbol/direction/volume/SL/TP/identity)
+- [x] **No execution bypass**: `execute(request, decision)` requires an
+      APPROVED RiskDecision with matching ids/fingerprint; GUI cannot
+      reach MT5 (AST) and the control API has no execution endpoint
+- [x] **Windows control plane**: `python -m app.control` — engine runtime,
+      localhost control API, static GUI (same-origin only), safe defaults
+      (READ_ONLY, stopped), dry-run ratchet (de-escalation only)
+- [x] **Live-MT5 suite separated and opt-in** (`tests/live_mt5`,
+      collect-ignored without `AURUMX_LIVE_MT5=1`)
+- [x] **No retries** after any outcome (§42); no martingale/recovery
+      anywhere (AST identifier scans + risk-math purity)
+- [x] **1048 tests passing** (789 baseline + 259 Phase-5), ruff clean,
+      `python -m compileall .` clean, `python -m app.control --help` works
+- [x] Phase-4 limits preserved (the gate is unchanged and still the only
+      approval authority; execution re-validates independently)
+
 ### Validation semantics note
 
 `valid` and `fresh` are deliberately orthogonal: a *stale* tick/candle series is
