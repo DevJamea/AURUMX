@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AURUMX CONTROL</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --blue: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif; padding: 16px;
+  }
+  h1 { font-size: 18px; letter-spacing: 2px; margin: 0 0 12px; }
+  h1 span { color: var(--yellow); }
+  .banner {
+    padding: 10px 14px; border-radius: 8px; font-weight: 600; margin-bottom: 14px;
+    border: 1px solid var(--border); text-align: center; font-size: 15px;
+  }
+  .banner.READ_ONLY { background: #21262d; color: var(--muted); }
+  .banner.DRY_RUN { background: #2d2200; color: var(--yellow); border-color: var(--yellow); }
+  .banner.MT5_DEMO { background: #0a1e33; color: var(--blue); border-color: var(--blue); }
+  .banner.MT5_REAL { background: #3a0d0d; color: var(--red); border-color: var(--red); }
+  .banner.halt { background: #3a0d0d; color: var(--red); border-color: var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 3px 6px 3px 0; vertical-align: top; }
+  td.k { color: var(--muted); white-space: nowrap; width: 45%; }
+  .ok { color: var(--green); } .bad { color: var(--red); } .warn { color: var(--yellow); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  button {
+    background: #21262d; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--blue); }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.safe { border-color: var(--green); color: var(--green); }
+  #events { max-height: 240px; overflow-y: auto; font-size: 12px; font-family: ui-monospace, monospace; }
+  #events div { padding: 2px 0; border-bottom: 1px solid #21262d; color: var(--muted); }
+  #events b { color: var(--text); font-weight: 500; }
+  .muted { color: var(--muted); }
+  .refresh-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>AURUMX <span>CONTROL</span></h1>
+  <div id="banner" class="banner READ_ONLY">STARTING…</div>
+
+  <div class="controls">
+    <button class="safe" onclick="post('/control/start')">START</button>
+    <button onclick="post('/control/stop')">STOP</button>
+    <button onclick="post('/control/dry_run')">DRY RUN</button>
+    <button class="danger" onclick="post('/control/emergency_stop')">EMERGENCY STOP</button>
+    <button onclick="post('/control/reset_kill_switch')">RESET KILL SWITCH</button>
+    <button onclick="post('/control/reconcile')">RECONCILE</button>
+  </div>
+
+  <div class="grid">
+    <div class="panel"><h2>MT5 Connection</h2><table id="conn"></table></div>
+    <div class="panel"><h2>Market</h2><table id="market"></table></div>
+    <div class="panel"><h2>Decision</h2><table id="decision"></table></div>
+    <div class="panel"><h2>Risk Gate</h2><table id="risk"></table></div>
+    <div class="panel"><h2>Execution Status</h2><table id="exec"></table></div>
+    <div class="panel"><h2>Open Positions</h2><div id="positions" class="muted">—</div></div>
+    <div class="panel"><h2>Reconciliation</h2><table id="recon"></table></div>
+    <div class="panel"><h2>Journal / Recent Events</h2><div id="events"></div></div>
+  </div>
+  <div class="refresh-note">auto-refresh every 2 s · the GUI talks ONLY to the local control API — never to MT5</div>
+
+<script>
+"use strict";
+/* AURUMX control GUI — read-only views + safe control operations.
+   Every request is a same-origin relative URL to the local control API. */
+
+function row(key, value, cls) {
+  const clsAttr = cls ? ' class="' + cls + '"' : "";
+  return "<tr><td class='k'>" + key + "</td><td" + clsAttr + ">" + value + "</td></tr>";
+}
+
+function yn(v) { return v ? "YES" : "NO"; }
+
+async function get(path) {
+  const response = await fetch(path, {headers: {"Accept": "application/json"}});
+  return response.json();
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {}),
+  });
+  await refresh();
+  const data = await response.json();
+  if (data && data.error) { alert("Control refused: " + data.error); }
+  return data;
+}
+
+function renderStatus(s) {
+  const banner = document.getElementById("banner");
+  const halted = s.emergency_stop_active || s.kill_switch_active;
+  banner.className = "banner " + (halted ? "halt" : s.mode);
+  banner.textContent = halted
+    ? "⛔ HALT ACTIVE — " + (s.emergency_stop_active ? "EMERGENCY STOP" : "KILL SWITCH")
+      + " · trading blocked until operator reset"
+    : "MODE: " + s.mode + (s.started ? " · engine started" : " · engine stopped");
+  document.getElementById("conn").innerHTML =
+    row("Connected", yn(s.mt5_connected), s.mt5_connected ? "ok" : "bad") +
+    row("Account Type", s.account_type,
+        s.account_type === "REAL" ? "bad" : (s.account_type === "DEMO" ? "ok" : "warn")) +
+    row("Symbol", s.symbol || "—") +
+    row("Mode", s.mode) +
+    row("Trading Enabled", yn(s.trading_enabled), s.trading_enabled ? "warn" : "") +
+    row("Kill Switch", yn(s.kill_switch_active), s.kill_switch_active ? "bad" : "ok") +
+    row("Emergency Stop", yn(s.emergency_stop_active), s.emergency_stop_active ? "bad" : "ok") +
+    row("System State", s.system_state);
+}
+
+async function refresh() {
+  try {
+    renderStatus(await get("/status"));
+    const m = await get("/market");
+    document.getElementById("market").innerHTML = m.error
+      ? row("Market", m.error, "warn")
+      : row("Bid", m.tick.bid ?? "—") + row("Ask", m.tick.ask ?? "—") +
+        row("Spread (pts)", m.tick.spread_points ?? "—") +
+        row("Session", m.session || "—") +
+        row("Data OK", yn(m.trading_data_ok), m.trading_data_ok ? "ok" : "bad");
+
+    const d = await get("/decision");
+    document.getElementById("decision").innerHTML = d.decision
+      ? row("Decision", d.decision.decision, d.decision.decision === "BUY" || d.decision.decision === "SELL" ? "warn" : "") +
+        row("Regime", d.decision.regime || "—") +
+        row("Proposal", yn(d.decision.proposal)) +
+        row("Reasons", (d.decision.reasons || []).join("; ") || "—")
+      : row("Decision", "no cycle yet", "muted");
+
+    const r = await get("/risk");
+    document.getElementById("risk").innerHTML = r.risk_decision
+      ? row("Action", r.risk_decision.action,
+            r.risk_decision.action === "APPROVED" ? "ok" : "bad") +
+        row("Risk Amount", r.risk_decision.risk_amount ?? "—") +
+        row("Failed Checks", (r.risk_decision.failed_checks || []).join(", ") || "none") +
+        row("Reasons", (r.risk_decision.reasons || []).join("; ") || "—")
+      : row("Risk Gate", "no proposal evaluated", "muted");
+
+    const exec = await get("/execution");
+    const table = document.getElementById("exec");
+    if (!exec.executions.length) {
+      table.innerHTML = row("Executions", "none yet", "muted");
+    } else {
+      const last = exec.executions[0];
+      table.innerHTML =
+        row("Last Status", last.status,
+            last.status === "FILLED" || last.status === "PARTIALLY_FILLED" ? "ok"
+            : last.status === "DRY_RUN" ? "warn" : "bad") +
+        row("Last Mode", last.mode) +
+        row("Symbol / Direction", last.symbol + " " + last.direction) +
+        row("Volume", last.volume) +
+        row("Order Ticket", last.order_ticket ?? "—") +
+        row("Position Ticket", last.position_ticket ?? "—") +
+        row("Total Records", exec.executions.length);
+    }
+
+    const pos = await get("/positions");
+    const posEl = document.getElementById("positions");
+    posEl.innerHTML = pos.error
+      ? "<span class='warn'>" + pos.error + "</span>"
+      : pos.positions.length
+        ? "<table>" + pos.positions.map(function (p) {
+            return row("#" + p.ticket + (p.is_aurumx ? " ·AURUMX" : ""),
+                       p.symbol + " " + p.direction + " " + p.volume +
+                       " @ " + p.price_open, p.is_aurumx ? "warn" : "");
+          }).join("") + "</table>"
+        : "<span class='muted'>no open positions</span>";
+
+    const rec = await get("/reconciliation");
+    document.getElementById("recon").innerHTML =
+      row("Status", rec.status,
+          rec.status === "CLEAN" ? "ok" : rec.status === "NOT_RUN" ? "" : "bad") +
+      row("Execution Allowed", yn(rec.execution_allowed), rec.execution_allowed ? "ok" : "bad") +
+      row("Counts", rec.last_report ? JSON.stringify(rec.last_report.counts) : "—");
+
+    const ev = await get("/events");
+    document.getElementById("events").innerHTML = ev.events.slice(-40).reverse().map(function (e) {
+      return "<div><b>" + e.type + "</b> " + (e.timestamp || "") + "</div>";
+    }).join("");
+  } catch (err) {
+    document.getElementById("banner").textContent = "CONTROL API UNREACHABLE — " + err;
+    document.getElementById("banner").className = "banner halt";
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

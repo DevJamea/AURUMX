@@ -121,6 +121,22 @@ class AppConfig(BaseSettings):
         default=1.5, gt=0, le=20.0, validation_alias=AliasChoices("MIN_REWARD_RISK")
     )
 
+    # ---- execution (Phase 5) --------------------------------------------
+    #: explicit total-exposure ceiling for the risk gate (USD notional).
+    #: None -> the gate fails closed (no trade can pass the exposure check
+    #: until an explicit limit is configured).  Never defaulted.
+    max_total_exposure_usd: float | None = Field(
+        default=None, gt=0, validation_alias=AliasChoices("MAX_TOTAL_EXPOSURE_USD")
+    )
+    #: local Windows control plane binding (localhost by default; the GUI
+    #: is served by the same process and talks ONLY to this API)
+    control_api_host: str = Field(
+        default="127.0.0.1", validation_alias=AliasChoices("CONTROL_API_HOST")
+    )
+    control_api_port: int = Field(
+        default=8757, ge=1, le=65535, validation_alias=AliasChoices("CONTROL_API_PORT")
+    )
+
     # ---- trade management feature flags (spec §25-27) ------------------
     enable_break_even: bool = Field(
         default=True, validation_alias=AliasChoices("ENABLE_BREAK_EVEN")
@@ -254,6 +270,9 @@ class AppConfig(BaseSettings):
             "max_open_positions": self.max_open_positions,
             "max_pending_orders": self.max_pending_orders,
             "max_daily_loss_pct": self.max_daily_loss_pct,
+            "max_total_exposure_usd": self.max_total_exposure_usd,
+            "control_api_host": self.control_api_host,
+            "control_api_port": self.control_api_port,
             "mt5_login": self.mt5_login,
             "mt5_server": self.mt5_server,
             "mt5_terminal_path": self.mt5_terminal_path,

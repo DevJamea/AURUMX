@@ -99,7 +99,10 @@ class ReconciliationReport(BaseModel):
 
     @property
     def clean(self) -> bool:
-        return bool(self.comparisons) and all(
+        """No unresolved discrepancy.  An empty report (nothing sent yet,
+        no AURUMX positions) is clean; broker-unavailable reports carry an
+        UNKNOWN comparison and are NOT clean."""
+        return all(
             c.status is ReconciliationStatus.MATCHED for c in self.comparisons
         )
 

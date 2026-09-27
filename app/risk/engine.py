@@ -196,6 +196,11 @@ class HardRiskGate:
         self._symbol_specs: dict[str, SymbolSpec] = dict(symbol_specs or {})
         self._event_sink = event_sink
 
+    def register_symbol(self, spec: SymbolSpec) -> None:
+        """Register/replace a verified symbol spec (control-plane wiring:
+        the runtime registers the symbol discovered at connect time)."""
+        self._symbol_specs[spec.name] = spec
+
     # ------------------------------------------------------------------
     # the contract
     # ------------------------------------------------------------------
