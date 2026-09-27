@@ -1,9 +1,10 @@
 # AurumX Architecture
 
-Status: Phases 1 (foundation), 2 (deterministic agent layer) and 3
-(decision engine, proposals, journal — hardened: explicit TP/RR semantics,
-strict H4 policy, gate classification, Phase-4 boundary contract)
-implemented. This document describes the target architecture and marks
+Status: Phases 1 (foundation), 2 (deterministic agent layer), 3
+(decision engine, proposals, journal — hardened) and 4 (hard risk gate:
+18 checks, kill switch, emergency stop, risk events) implemented.
+Phase 4 is proposal-only: it approves/rejects, it never executes.
+This document describes the target architecture and marks
 what exists today.
 
 ## 1. Layer model
@@ -40,10 +41,10 @@ layer talks to a broker.**
 └──────────────────────────┬───────────────────────────────────────┘
                            │ proposed trade (pure data, expires)
 ┌──────────────────────────▼───────────────────────────────────────┐
-│                 HARD RISK GATE (Phase 4)                         │
-│  PASS / BLOCK — code, not a vote. Never modifies decisions.      │
+│                 HARD RISK GATE (Phase 4 — implemented)                         │
+│  HardRiskGate: 18 checks, fail-closed, independent risk math.      │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ only approved requests
+                           │ APPROVED / REJECTED / EMERGENCY_STOP · never modifies proposals
 ┌──────────────────────────▼───────────────────────────────────────┐
 │              EXECUTION SERVICE (Phase 5)                         │
 │  validate → risk check → order_check → send → verify → reconcile │
@@ -104,9 +105,14 @@ limitations, examples).
 | Risk state | `app/risk/state.py` | caller-supplied snapshot (daily loss, limits, open/pending counts, active fingerprints); engine reads, never mutates |
 | Journal contract | `app/decision/journal.py` | `DecisionRecord` with full evidence (agents, synthesis, gates, config, snapshot ref); JSON-safe, credential-free |
 | SQLite journal | `app/storage/decision_journal.py` | WAL, indexed (ts/symbol), flat schema → PostgreSQL-ready |
-| **Phase-4 gate contract** | `app/risk/gate.py` | **interface only**: `RiskGate` Protocol (`evaluate(proposal, risk_state, account_state) -> RiskDecision`), `REQUIRED_CHECKS` (14 independent safety checks), `AccountState` input model. No implementation until Phase 4; the decision layer cannot call it (boundary tests) |
+| Phase-4 gate contract | `app/risk/gate.py` | `RiskGate` Protocol (`evaluate(proposal, risk_state, account_state) -> RiskDecision`), `REQUIRED_CHECKS` (14 contract-level names), `RiskCheck`/`RiskDecision` models, `AccountState` evidence input (None-defaults, `trade_allowed=False`) |
+| Phase-4 gate implementation | `app/risk/engine.py` | `HardRiskGate`: 18 ordered checks (`IMPLEMENTED_CHECKS`), tiered precedence (emergency > kill switch > trading > account > safety > approve), independent risk/exposure math, optional `event_sink`, `RiskGateConfig` (safe defaults; `max_total_exposure` never defaulted) |
+| Kill switch / emergency stop | `app/risk/kill_switch.py` | `KillSwitchState` + `EmergencyStopState` (STANDBY/ACTIVE/TRIGGERED/RESET_REQUIRED), `KillSwitchStore` Protocol (future GUI/VPS persistence), `halt_flags()` bridge to `AccountState` |
+| Risk events | `app/risk/events.py` | `RISK_APPROVED` / `RISK_REJECTED` / `EMERGENCY_STOP` / `KILL_SWITCH_ACTIVE` data objects — no Telegram/HTTP (receivers stamp time) |
 
-See `docs/DECISIONS.md` for the Phase-3 decision record (HOLD vs ABORT
+See `docs/DECISIONS.md` for the Phase-3 decision record, and
+`docs/RISK_GATE.md` for the Phase-4 gate reference (all 18 checks,
+precedence, fail-closed table, kill switch, limitations). (HOLD vs ABORT
 semantics, threshold rationale, SL/TP methodology, fingerprinting,
 determinism guarantees, known limitations).
 

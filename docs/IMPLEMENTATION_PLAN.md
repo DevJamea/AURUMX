@@ -51,7 +51,7 @@ market structure, paper engine, research splits and 100+ test files.
 
 | Concept | Where it lands in AurumX |
 |---|---|
-| Deterministic **risk gate**: output is only APPROVED / NO TRADE, never modifies the decision, fail-closed, check-by-check audit trail | `app/risk` (Phase 4) |
+| Deterministic **risk gate**: output is only APPROVED / NO TRADE, never modifies the decision, fail-closed, check-by-check audit trail | `app/risk` — **implemented in Phase 4** (`HardRiskGate`, 18 checks, see `docs/RISK_GATE.md`) |
 | **Fractal swing detection** (left/right window) + HH/HL/LH/LL classification + S/R levels | `app/agents/structure.py` (Phase 2) |
 | **Provenance-carrying data models** + `ValidationReport` (errors/warnings) + data-freshness budgets | `app/core/models.py`, `app/market/*` validators (Phase 1) |
 | **Fail-closed MT5 adapter**: demo-account verification, re-validation before send, `TRADE_RETCODE_DONE` verification, never fake data when the package is missing | `app/brokers/mt5.py` (Phase 1 read-only, Phase 5 execution) |
@@ -284,6 +284,57 @@ Post-review hardening of the decision layer (no Phase-4 work, no execution):
       any execution surface; no MT5/network/wall-clock in decision or risk
       layers (AST checks)
 - [x] **587 tests passing** (526 + 61 hardening), ruff clean
+
+### Phase 4 acceptance criteria (all met)
+
+The hard risk gate — an independent barrier between the decision layer and
+(any future) execution. Full reference: `docs/RISK_GATE.md`.
+
+- [x] **Fail-closed barrier**: missing evidence (equity, spread, exposure,
+      margin, symbol metadata) ⇒ REJECTED, never APPROVED; unknown
+      configurations (unset `max_total_exposure`, unset spread limit) ⇒
+      REJECTED; `RiskGateConfig` safe default `trading_enabled=False`
+- [x] **Contract** (`app/risk/gate.py`): `RiskGate` Protocol,
+      `REQUIRED_CHECKS` (14), `RiskCheck{status: PASS/FAIL/WARN/NOT_EVALUATED,
+      severity: CRITICAL/ADVISORY}`, `RiskDecision` with deterministic
+      `gate_decision_id`, warnings, risk amount, exposure, config snapshot,
+      kill/emergency state; `AccountState` evidence semantics (monetary
+      fields default `None`, `trade_allowed` defaults `False`)
+- [x] **Implementation** (`app/risk/engine.py`): `HardRiskGate`, 18 ordered
+      checks (`IMPLEMENTED_CHECKS`), tiered precedence — emergency stop >
+      kill switch > trading disabled > account > safety checks > approve;
+      halted tiers record remaining checks NOT_EVALUATED (visible)
+- [x] **Independent risk math**: `loss_per_lot = |entry − SL| / tick_size ×
+      tick_value`; never reads `proposal.sizing.risk_amount` (lying-proposal
+      test); never rounds volume/risk into validity; exposure =
+      current + volume × (entry / tick_size) × tick_value
+- [x] **Gold-only reuse**: `is_gold_symbol()` from Phase 1 — no second
+      implementation; symbol must ALSO have registered verified metadata
+- [x] **Kill switch & emergency stop** (`app/risk/kill_switch.py`): two
+      distinct caller-supplied halts → EMERGENCY_STOP, statuses
+      STANDBY/ACTIVE/TRIGGERED/RESET_REQUIRED, `KillSwitchStore` Protocol
+      for future GUI/VPS persistence, `halt_flags()` bridge; no invented
+      auto-triggers
+- [x] **Risk events** (`app/risk/events.py`): RISK_APPROVED / RISK_REJECTED /
+      EMERGENCY_STOP / KILL_SWITCH_ACTIVE as data objects via optional
+      `event_sink` — no Telegram/HTTP/network
+- [x] **No mutation**: proposal byte-identical before/after evaluation
+      (model_dump + model_dump_json tests); AST scan forbids attribute
+      assignment on proposals in `app/risk`
+- [x] **No martingale/recovery/loss-scaling anywhere** (AST identifier
+      scans + risk-math purity test: consecutive losses can only block)
+- [x] **Determinism**: repeated + rebuilt evaluations byte-identical;
+      no uuid/random/wall-clock/network/MT5 in `app/risk` (AST tests)
+- [x] Full matrix tested: symbols (incl. XAGUSD/GOLDEN/GC=F), geometry
+      (NaN/inf/zero/off-grid/under-minimum/wrong side), risk
+      (below/exact/above/lying proposal), exposure, daily loss (at-limit
+      rejects), consecutive losses, position/pending boundaries, spread
+      (missing/50/51), volume (min/max/step/invalid), account evidence,
+      adversarial combos (valid BUY + each violation, kitchen sink),
+      precedence, events, pipeline integration (engine → gate)
+- [x] **789 tests passing** (587 + 202 Phase-4), ruff clean
+- [x] **Phase 4 does NOT execute trades** — gate output is data; execution
+      remains Phase 5
 
 ### Validation semantics note
 

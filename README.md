@@ -35,7 +35,7 @@ DRY_RUN=true
 | 1 | Foundation: config, logging, events, models, MT5 adapter (read-only), symbol discovery, tick/candle validation, market snapshots, diagnostics | ✅ **complete — 156 tests passing** |
 | 2 | Analysis agents (trend, momentum, structure, liquidity, volatility, mean-reversion, macro) | ✅ **complete — 359 tests passing** |
 | 3 | Decision engine: deterministic gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal (+ hardening: explicit TP/RR semantics, strict H4 policy, gate classification, Phase-4 RiskGate contract) | ✅ **complete — 587 tests passing; proposal-only, no execution** |
-| 4 | Hard risk gate, kill switch, exposure limits, emergency stop | ⏳ next |
+| 4 | Hard risk gate, kill switch, exposure limits, emergency stop | ✅ **complete — 789 tests passing; approve/reject only, no execution** |
 | 5 | Execution (orders, BE, partial close, trailing, pending orders) | planned |
 | 6 | Backtesting + walk-forward | planned |
 | 7 | Dashboard (React) + FastAPI | planned |
@@ -56,7 +56,7 @@ Analysis Agents                        ← never see a broker, never trade
         ↓
 Decision Engine  (weighted evidence + market regime)
         ↓
-Risk Gate        (hard gate — PASS/BLOCK, not a vote)
+Risk Gate        (hard gate — APPROVED/REJECTED/EMERGENCY_STOP, not a vote)
         ↓
 Execution Service                      ← only layer allowed to trade
         ↓
@@ -105,7 +105,7 @@ app/
 ├── market/     symbol discovery, tick/candle validation, market snapshots
 ├── agents/     7 deterministic analysis agents + feature layer (Phase 2, done)
 ├── decision/   regime, synthesis, gates, proposals, journal  (Phases 2–3 done)
-├── risk/       sizing + risk state + gate CONTRACT (done) · gate implementation (Phase 4)
+├── risk/       sizing + risk state + gate contract · HardRiskGate 18 checks (Phase 4 done)
 ├── execution/  order lifecycle                        (Phase 5)
 ├── backtest/   no-look-ahead simulator + walk-forward (Phase 6)
 ├── storage/    decision journal (SQLite, done) → PostgreSQL (later)

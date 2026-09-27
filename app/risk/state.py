@@ -42,34 +42,46 @@ class RiskState(BaseModel):
 
 
 class AccountState(BaseModel):
-    """Execution-side account + safety state for the Phase-4 RiskGate.
+    """Execution-side account + safety state for the RiskGate (Phase 4).
 
     Pure snapshot supplied BY THE CALLER (the worker/execution layer fills
     it from the broker account; backtests supply it directly) — the gate
     never fetches it itself.  Together with ``RiskState`` and the
-    ``TradeProposal`` this is the complete input triple of the Phase-4
-    safety barrier: enough information to independently reject a dangerous
-    proposal (margin, exposure, halts, account sanity) without trusting
-    anything the decision layer concluded.
+    ``TradeProposal`` this is the complete input triple of the safety
+    barrier: enough information to independently reject a dangerous
+    proposal (margin, exposure, spread, halts, account sanity) without
+    trusting anything the decision layer concluded.
+
+    **Evidence semantics (fail-closed):** monetary evidence fields default
+    to ``None`` = *evidence not supplied*.  The gate never substitutes a
+    silent zero for missing evidence: a check that needs a field which is
+    ``None`` FAILS with a missing-evidence reason.  Callers must supply
+    evidence affirmatively.
     """
 
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
 
-    balance: float = Field(default=0.0)
-    equity: float = Field(default=0.0)
-    margin: float = Field(default=0.0)
-    margin_free: float = Field(default=0.0)
+    balance: float | None = Field(default=None)
+    equity: float | None = Field(default=None)
+    margin: float | None = Field(default=None)
+    margin_free: float | None = Field(default=None)
+    #: margin level in percent (equity/margin*100); None = not reported
     margin_level: float | None = Field(default=None)
     leverage: int = Field(default=100, ge=1)
     currency: str = "USD"
     #: currently open positions (count; cross-checked against RiskState)
-    open_positions: int = Field(default=0, ge=0)
+    open_positions: int | None = Field(default=None, ge=0)
     #: currently pending orders (count; cross-checked against RiskState)
-    pending_orders: int = Field(default=0, ge=0)
-    #: monetary value of open positions (total exposure input)
-    open_positions_notional: float = Field(default=0.0, ge=0)
-    #: account/terminal allows trading at all (trade mode, connection state)
-    trade_allowed: bool = True
+    pending_orders: int | None = Field(default=None, ge=0)
+    #: monetary value of open positions — REQUIRED evidence for the
+    #: exposure check (None -> the check fails closed)
+    open_positions_notional: float | None = Field(default=None, ge=0)
+    #: current quoted spread in points — REQUIRED evidence for the spread
+    #: check (None -> the check fails closed, never treated as zero)
+    spread_points: float | None = Field(default=None, ge=0)
+    #: account/terminal allows trading at all — REQUIRED, affirmative
+    #: permission (default False: absence of permission is not permission)
+    trade_allowed: bool = False
     #: persistent operator emergency stop is active (blocks everything)
     emergency_stop_active: bool = False
     #: global kill switch is active (config-level halt, blocks everything)
@@ -77,5 +89,5 @@ class AccountState(BaseModel):
 
     @property
     def has_sane_equity(self) -> bool:
-        """Equity present and positive (a gate input sanity primitive)."""
-        return self.equity > 0
+        """Equity evidence present and positive (sanity primitive)."""
+        return self.equity is not None and self.equity > 0

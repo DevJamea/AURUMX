@@ -12,7 +12,14 @@ from datetime import UTC
 
 from app.core.enums import RiskAction
 from app.decision.proposal import DEFAULT_INVALIDATION_CONDITIONS
-from app.risk.gate import REQUIRED_CHECKS, RiskCheck, RiskDecision, RiskGate
+from app.risk.gate import (
+    REQUIRED_CHECKS,
+    CheckSeverity,
+    CheckStatus,
+    RiskCheck,
+    RiskDecision,
+    RiskGate,
+)
 from app.risk.state import AccountState, RiskState
 
 
@@ -37,9 +44,24 @@ class TestRequiredChecks:
 
 class TestContractModels:
     def test_risk_check_model(self):
-        check = RiskCheck(name="daily_loss_limit", passed=False, detail="199/200 used")
+        """§21: structured check output — name, status, severity, reason,
+        observed_value, limit."""
+        check = RiskCheck(
+            name="daily_loss_limit", status=CheckStatus.FAIL,
+            reason="daily loss 199 of 200", observed_value=199.0, limit=200.0,
+        )
         assert check.name == "daily_loss_limit"
+        assert check.status is CheckStatus.FAIL
         assert not check.passed
+        assert check.severity is CheckSeverity.CRITICAL
+
+    def test_check_statuses_cover_the_spec(self):
+        assert [s.value for s in CheckStatus] == ["PASS", "FAIL", "WARN", "NOT_EVALUATED"]
+
+    def test_warn_passes_advisory_does_not_block(self):
+        warn = RiskCheck(name="max_spread", status=CheckStatus.WARN,
+                         severity=CheckSeverity.ADVISORY)
+        assert warn.passed  # WARN clears the check
 
     def test_risk_decision_approved_property(self):
         approved = RiskDecision(action=RiskAction.APPROVED, proposal_id="p1")
@@ -53,16 +75,41 @@ class TestContractModels:
             proposal_id="abc123",
             fingerprint="fp0",
             checks=[
-                RiskCheck(name="max_spread", passed=True),
-                RiskCheck(name="daily_loss_limit", passed=False, detail="limit reached"),
+                RiskCheck(name="max_spread", status=CheckStatus.PASS),
+                RiskCheck(name="daily_loss_limit", status=CheckStatus.FAIL,
+                          reason="limit reached", observed_value=200.0, limit=200.0),
             ],
             reasons=["daily loss limit reached"],
+            warnings=["advisory"],
+            risk_amount=50.0,
+            exposure={"current": 0.0, "proposed": 26_502.0, "total": 26_502.0, "limit": 1e6},
+            config_snapshot={"trading_enabled": True},
+            kill_switch_active=False,
+            emergency_stop_active=False,
         )
         summary = decision.summary()
         assert summary["action"] == "REJECTED"
         assert summary["failed"] == ["daily_loss_limit"]
-        assert summary["passed"] == 1
+        assert summary["passed"] == ["max_spread"]
+        assert summary["risk_amount"] == 50.0
+        assert summary["exposure"]["total"] == 26_502.0
+        assert summary["kill_switch_active"] is False
         json.dumps(summary)  # no serialization surprises
+
+    def test_passed_failed_not_evaluated_partition(self):
+        decision = RiskDecision(
+            action=RiskAction.REJECTED,
+            proposal_id="x",
+            checks=[
+                RiskCheck(name="a", status=CheckStatus.PASS),
+                RiskCheck(name="b", status=CheckStatus.FAIL),
+                RiskCheck(name="c", status=CheckStatus.NOT_EVALUATED),
+                RiskCheck(name="d", status=CheckStatus.WARN, severity=CheckSeverity.ADVISORY),
+            ],
+        )
+        assert decision.passed_checks == ["a"]
+        assert decision.failed_checks == ["b"]
+        assert decision.not_evaluated_checks == ["c"]
 
     def test_models_are_credential_free(self):
         blob = json.dumps(RiskDecision(
@@ -73,14 +120,17 @@ class TestContractModels:
 
 
 class TestAccountState:
-    def test_defaults_are_safe(self):
-        """Fail-closed defaults: an empty AccountState carries no trading
-        permission and no halts — implementations must fill it honestly."""
+    def test_defaults_fail_closed(self):
+        """Phase-4 evidence semantics: monetary evidence defaults to None
+        (never a silent zero), and trading permission must be AFFIRMATIVE."""
         state = AccountState()
-        assert state.open_positions == 0 and state.pending_orders == 0
+        assert state.open_positions is None and state.pending_orders is None
+        assert state.open_positions_notional is None
+        assert state.spread_points is None
+        assert state.equity is None
         assert state.emergency_stop_active is False
         assert state.kill_switch_active is False
-        assert state.trade_allowed is True
+        assert state.trade_allowed is False  # absence of permission != permission
 
     def test_halt_flags_representable(self):
         halted = AccountState(emergency_stop_active=True, kill_switch_active=True)
@@ -170,15 +220,16 @@ class TestProtocolNotImplementation:
         assert list(params) == ["self", "proposal", "risk_state", "account_state"]
         assert inspect.signature(RiskGate.evaluate).return_annotation is not inspect.Signature.empty
 
-    def test_no_implementation_ships_in_phase_3(self):
-        """app/risk/gate.py contains models + the Protocol ONLY — no concrete
-        gate class, no evaluate() logic (Phase 4 implements it)."""
+    def test_gate_py_stays_contract_only(self):
+        """app/risk/gate.py holds the contract (models + Protocol) ONLY —
+        the implementation lives in app/risk/engine.py (HardRiskGate)."""
         import ast
         from pathlib import Path
 
         tree = ast.parse(Path("app/risk/gate.py").read_text())
-        classes = [n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
-        assert set(classes) == {"RiskCheck", "RiskDecision", "RiskGate"}
+        classes = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+        assert classes <= {"RiskCheck", "RiskDecision", "RiskGate",
+                           "CheckStatus", "CheckSeverity"}
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "evaluate":
                 # protocol stub: body is only '...' (Ellipsis)
@@ -186,3 +237,17 @@ class TestProtocolNotImplementation:
                 assert isinstance(node.body[0], ast.Expr)
                 assert isinstance(node.body[0].value, ast.Constant)
                 assert node.body[0].value.value is ...
+
+    def test_implementation_lives_in_engine_and_satisfies_the_protocol(self):
+        from app.risk.engine import HardRiskGate
+
+        assert issubclass(type(HardRiskGate), object)  # concrete class
+        gate = HardRiskGate()
+        assert callable(gate.evaluate)
+        assert hasattr(gate, "config")
+
+    def test_implementation_covers_every_required_check(self):
+        from app.risk.engine import IMPLEMENTED_CHECKS
+        from app.risk.gate import REQUIRED_CHECKS
+
+        assert set(REQUIRED_CHECKS) <= set(IMPLEMENTED_CHECKS)
