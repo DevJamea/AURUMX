@@ -1,7 +1,8 @@
 # AurumX Architecture
 
-Status: Phases 1 (foundation) and 2 (deterministic agent layer) implemented.
-This document describes the target architecture and marks what exists today.
+Status: Phases 1 (foundation), 2 (deterministic agent layer) and 3
+(decision engine, proposals, journal) implemented. This document describes
+the target architecture and marks what exists today.
 
 ## 1. Layer model
 
@@ -29,11 +30,13 @@ layer talks to a broker.**
 └──────────────────────────┬───────────────────────────────────────┘
                            │ AgentResult (direction, signal_strength, reasons…)
 ┌──────────────────────────▼───────────────────────────────────────┐
-│              DECISION ENGINE (Phase 2 core done)                 │
-│  Regime detection → regime-weighted evidence → BUY/SELL/HOLD     │
-│  (app/decision) — Phase 3 adds config, journal, entry/SL/TP      │
+│                DECISION ENGINE (Phases 2–3)                      │
+│  Regime → agents → synthesis → 14 deterministic gates →          │
+│  BUY/SELL/HOLD/ABORT + TradeProposal (entry/SL/TP/volume)        │
+│  + DecisionJournal (full provenance, every evaluation)           │
+│  Phase 3 is proposal-only: NO execution, NO broker access        │
 └──────────────────────────┬───────────────────────────────────────┘
-                           │ proposed trade (entry/SL/TP/risk)
+                           │ proposed trade (pure data, expires)
 ┌──────────────────────────▼───────────────────────────────────────┐
 │                 HARD RISK GATE (Phase 4)                         │
 │  PASS / BLOCK — code, not a vote. Never modifies decisions.      │
@@ -85,6 +88,24 @@ layer talks to a broker.**
 
 See `docs/AGENTS.md` for the full agent reference (evidence tables, gates,
 limitations, examples).
+
+## 2c. What exists today (Phase 3 — decision engine)
+
+| Component | File | Notes |
+|---|---|---|
+| Engine config | `app/decision/config.py` | every threshold in one validated model; engineering defaults, not statistically optimal (see `docs/DECISIONS.md`) |
+| Timeframe alignment | `app/decision/alignment.py` | H4/H1/M15 weighted agreement; renormalizes over present TFs; strong-read flag |
+| SL/TP levels | `app/decision/levels.py` | hierarchy: structure → ATR(2×) → broker minimum; TP by RR target or opposing structure; tick-grid snapping; Phase-1 validators |
+| Trade proposal | `app/decision/proposal.py` | pure data: entry (validated ask/bid), SL, TP, RR, volume, invalidation conditions, TTL; `EntryPriceProvider` protocol (tick now, historical adapter in Phase 6) |
+| Decision engine | `app/decision/engine.py` | 14-gate pipeline; deterministic BUY/SELL/HOLD/ABORT; slices every series to candles closed by `now` (no look-ahead); agent rosters canonically ordered |
+| Risk sizing | `app/risk/sizing.py` | pure calculator: equity × risk% / loss-per-lot, floored to step (never rounded up); martingale structurally impossible (closed signature) |
+| Risk state | `app/risk/state.py` | caller-supplied snapshot (daily loss, limits, open/pending counts, active fingerprints); engine reads, never mutates |
+| Journal contract | `app/decision/journal.py` | `DecisionRecord` with full evidence (agents, synthesis, gates, config, snapshot ref); JSON-safe, credential-free |
+| SQLite journal | `app/storage/decision_journal.py` | WAL, indexed (ts/symbol), flat schema → PostgreSQL-ready |
+
+See `docs/DECISIONS.md` for the Phase-3 decision record (HOLD vs ABORT
+semantics, threshold rationale, SL/TP methodology, fingerprinting,
+determinism guarantees, known limitations).
 
 ## 3. Key design decisions
 

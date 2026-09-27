@@ -1,6 +1,6 @@
 # AurumX — Implementation Plan
 
-Status: **Phase 1 implemented and tested.** This document records the reference-project
+Status: **Phases 1–3 implemented and tested.** This document records the reference-project
 review, the architecture decisions, and the phase-by-phase plan. Each phase must pass its
 tests before the next phase starts.
 
@@ -139,7 +139,7 @@ The spec's tree is followed with two adaptations (allowed by §6):
 |---|---|---|
 | **1 — Foundation** | structure, config, structured logging, events, domain models, `BrokerInterface`, `MT5Broker` (read-only), symbol discovery + verification, tick/candle validation, market snapshot, diagnostics script, test suite | **DONE — all tests pass** |
 | 2 — Agents | Trend, Momentum, Structure, Liquidity, Volatility, Mean Reversion, Macro interface + synthesis agent interface; agent registry & weights config | **DONE — 203 new tests, all passing** |
-| 3 — Decision engine | regime detection, weighted evidence, consensus, explanations, decision journal storage | core built in Phase 2 (`app/decision`); config/journal pending |
+| 3 — Decision engine | deterministic engine + gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal | **DONE — 167 new tests, all passing; proposal-only, NO execution** |
 | 4 — Risk | hard risk gate, position sizing, limits, daily loss, spread/exposure checks, kill switch | pending |
 | 5 — Execution | order validation → risk check → `order_check` → send → verify → reconcile; BE, partial close, trailing, pending orders; dry-run + paper broker | pending |
 | 6 — Backtesting | no-look-ahead simulator, metrics, reports, walk-forward splits, agent performance tracking | pending |
@@ -200,6 +200,61 @@ The spec's tree is followed with two adaptations (allowed by §6):
 - [x] Backtest-compatible (no MT5/wall-clock/network anywhere in the layer)
 - [x] docs/AGENTS.md reference written; ARCHITECTURE.md updated
 - [x] **359 tests passing** (156 Phase-1 + 203 Phase-2), ruff clean
+
+### Phase 3 acceptance criteria (all met)
+
+- [x] Full pipeline MT5→BrokerAdapter→MarketSnapshot→Validation→Regime→
+      Agents→Synthesis→DecisionEngine→RiskSizing→TradeProposal→DecisionJournal
+      (integration-tested end-to-end with the deterministic FakeMT5)
+- [x] Deterministic BUY/SELL/HOLD/ABORT from agent evidence, regime
+      compatibility, signal strength, conflict, data quality, timeframe
+      alignment and risk constraints — no majority voting
+- [x] Every threshold in `DecisionEngineConfig` (validated, documented,
+      overridable; reused from `AppConfig` via `from_app_config`) — initial
+      engineering parameters, historical validation documented as required
+- [x] TF roles H4 context / H1 directional / M15 entry; H4+H1 BUY + M15
+      strongly bearish → HOLD `timeframe_conflict`; lower configured
+      threshold explicitly permits (tested both ways)
+- [x] Disagreement preserved: `supporting_agents`, `opposing_agents`,
+      `conflict_score` on every decision; conflict above tolerance → HOLD
+- [x] Data-quality gate before BUY/SELL (tick/candles/sessions/spread);
+      critical invalid → ABORT (fail-closed), tested per case
+- [x] Session OPEN→normal, CLOSED→HOLD, UNKNOWN→ABORT (never assumed OPEN)
+- [x] Spread gate vs `max_spread_points` → ABORT `spread_too_high`
+- [x] `TradeProposal` pure data with entry/SL/TP/RR/volume/reasons/
+      invalidation_conditions/created_at/expires_at — nothing is ever sent
+      anywhere; BUY=validated ask, SELL=validated bid (provider protocol,
+      historical backtest adapter documented for Phase 6)
+- [x] SL hierarchy structure → ATR(2×) → broker minimum; TP by RR target
+      or opposing structure; validated against direction/tick size/digits/
+      stops level/freeze level (Phase-1 validators reused)
+- [x] RR computed pre-rounding; `RR < minimum_rr` → HOLD (both TP methods
+      and the raised-minimum path tested)
+- [x] Sizing pure calculator floored to volume step (never rounded up),
+      below minimum → HOLD `position_size_below_minimum`; martingale
+      structurally impossible (closed signature, tested)
+- [x] `RiskState` interface (daily loss, limits, open/pending, fingerprints)
+      read-only; violations ABORT; engine never mutates it (tested)
+- [x] Position limits (max 1 open, max 2 pending) → no new proposal
+- [x] Anti-overtrading via setup fingerprint (no time delays); duplicate →
+      HOLD `duplicate_setup`; new setup allowed (tested)
+- [x] Proposal expiry VALID/EXPIRED as a pure function of time
+- [x] Journal records every evaluation with full provenance (agents,
+      synthesis, gates, config, snapshot ref) — no credentials (tested);
+      in-memory + SQLite (WAL, indexed) backends
+- [x] No look-ahead: `decision(prefix) == decision(full series @ prefix
+      time)` — future candles present in the snapshot cannot change a
+      finalized decision (tested with future-anchored series)
+- [x] Determinism: repeated evaluation, rebuilt engine and reordered agent
+      rosters all reproduce identical decisions (tested)
+- [x] Scenarios A–J pinned (BUY/SELL/timeframe-conflict/spread/invalid
+      tick/closed/unknown/insufficient RR/daily loss/position limit)
+- [x] Decision layer contains no MT5/network/wall-clock/GUI (source-hygiene
+      AST tests extended to `app/decision` + `app/risk`)
+- [x] docs/DECISIONS.md written; ARCHITECTURE.md/README updated
+- [x] **526 tests passing** (156 + 203 + 167), ruff clean
+- [x] **Phase 3 does NOT execute trades** — no `order_send` anywhere in the
+      decision layer; execution remains Phase 5 behind the risk gate
 
 ### Validation semantics note
 

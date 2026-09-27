@@ -15,7 +15,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.core.enums import TimeFrame
+from app.core.enums import SessionState, TimeFrame
 from app.core.models import (
     Candle,
     CandleSeries,
@@ -277,15 +277,20 @@ def make_snapshot(
     valid: bool = True,
     fresh: bool = True,
     tick: MarketTick | None = None,
+    tick_valid: bool = True,
+    tick_fresh: bool = True,
+    spread_points: float = 20.0,
+    session_state: SessionState | None = SessionState.OPEN,
 ) -> MarketSnapshot:
-    """A hand-built, valid, fresh snapshot from synthetic series."""
+    """A hand-built snapshot from synthetic series (defaults: valid, fresh,
+    OPEN session — Phase-3 decision scenarios tweak the knobs)."""
     tick_check = TickCheck(
         tick=tick or make_tick(time=created_at - timedelta(seconds=2)),
-        valid=True,
-        fresh=True,
+        valid=tick_valid,
+        fresh=tick_fresh,
         report=ValidationReport(),
         spread=0.2,
-        spread_points=20.0,
+        spread_points=spread_points,
         age_seconds=2.0,
     )
     series_checks = {
@@ -304,6 +309,7 @@ def make_snapshot(
         symbol=gold_symbol_spec(),
         tick=tick_check,
         series=series_checks,
+        session_state=session_state or SessionState.UNKNOWN,
         report=ValidationReport(),
     )
 

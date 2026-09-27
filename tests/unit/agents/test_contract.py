@@ -242,7 +242,11 @@ FORBIDDEN_DOTTED_CALLS = {
     "exec",
 }
 
-AGENT_SOURCES = sorted(Path("app/agents").glob("*.py")) + sorted(Path("app/decision").glob("*.py"))
+AGENT_SOURCES = (
+    sorted(Path("app/agents").glob("*.py"))
+    + sorted(Path("app/decision").glob("*.py"))
+    + sorted(Path("app/risk").glob("*.py"))
+)
 
 
 class TestSourceHygiene:
@@ -280,7 +284,8 @@ class TestSourceHygiene:
             tree = ast.parse(source.read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("app."):
-                    allowed_prefixes = ("app.core", "app.agents", "app.decision", "app.market")
+                    # app.risk is pure sizing/state math (Phase 3) — no broker imports
+                    allowed_prefixes = ("app.core", "app.agents", "app.decision", "app.market", "app.risk")
                     assert node.module.startswith(allowed_prefixes), (
                         f"{source.name}: agents must not depend on {node.module}"
                     )

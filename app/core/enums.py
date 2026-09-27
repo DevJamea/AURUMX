@@ -50,11 +50,17 @@ class Direction(StrEnum):
 
 
 class DecisionAction(StrEnum):
-    """Final decision actions produced by the decision engine."""
+    """Final decision actions produced by the decision engine.
+
+    Phase 3 adds ABORT: a *safety* outcome (bad data, unknown session state,
+    spread/limit violations) — deliberately distinct from HOLD, which means
+    "valid market, insufficient edge".
+    """
 
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
+    ABORT = "ABORT"
 
 
 class TradingMode(StrEnum):

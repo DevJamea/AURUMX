@@ -33,9 +33,9 @@ DRY_RUN=true
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Foundation: config, logging, events, models, MT5 adapter (read-only), symbol discovery, tick/candle validation, market snapshots, diagnostics | ✅ **complete — 156 tests passing** |
-| 2 | Analysis agents (trend, momentum, structure, liquidity, volatility, mean-reversion, macro) | ⏳ next |
-| 3 | Decision engine (regime, weighted evidence, explanations, journal) | planned |
-| 4 | Hard risk gate, position sizing, daily loss, kill switch | planned |
+| 2 | Analysis agents (trend, momentum, structure, liquidity, volatility, mean-reversion, macro) | ✅ **complete — 359 tests passing** |
+| 3 | Decision engine: deterministic gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal | ✅ **complete — 526 tests passing; proposal-only, no execution** |
+| 4 | Hard risk gate, kill switch, exposure limits, emergency stop | ⏳ next |
 | 5 | Execution (orders, BE, partial close, trailing, pending orders) | planned |
 | 6 | Backtesting + walk-forward | planned |
 | 7 | Dashboard (React) + FastAPI | planned |
@@ -104,11 +104,11 @@ app/
 ├── brokers/    BrokerInterface + MT5Broker (the ONLY MetaTrader5 importer)
 ├── market/     symbol discovery, tick/candle validation, market snapshots
 ├── agents/     7 deterministic analysis agents + feature layer (Phase 2, done)
-├── decision/   regime engine + synthesis contract     (Phase 2 core done)
-├── risk/       hard risk gate                         (Phase 4)
+├── decision/   regime, synthesis, gates, proposals, journal  (Phases 2–3 done)
+├── risk/       sizing + risk state (done) · hard gate + kill switch (Phase 4)
 ├── execution/  order lifecycle                        (Phase 5)
 ├── backtest/   no-look-ahead simulator + walk-forward (Phase 6)
-├── storage/    repositories (SQLite → PostgreSQL)     (Phase 3+)
+├── storage/    decision journal (SQLite, done) → PostgreSQL (later)
 ├── worker/     trading loop + health monitor          (Phase 4+)
 └── api/        FastAPI + websocket                    (Phase 7)
 frontend/       React + TypeScript dashboard           (Phase 7)
@@ -133,6 +133,21 @@ disagreement preservation in synthesis, and a full adversarial matrix (NaN /
 infinities / duplicate, unordered or gapped series / spikes / constant prices /
 zero volume / bad ticks — all fail safe to NEUTRAL).  See
 [`docs/AGENTS.md`](docs/AGENTS.md) for the agent reference.
+
+**Phase 3 (decision engine)** adds the deterministic decision layer on top:
+a 14-gate pipeline that turns agent evidence into BUY / SELL / HOLD / ABORT
+with a full audit trail — data-quality and session gates (fail-closed:
+UNKNOWN session or excessive spread means ABORT, never "assume it's fine"),
+timeframe-alignment and conflict gates that preserve disagreement, SL/TP
+construction (structure → ATR → broker-minimum hierarchy), pure position
+sizing floored to the broker step, setup fingerprints to stop duplicate
+proposals, and a decision journal that records every evaluation with the
+complete evidence needed to answer *why* the bot decided anything. The
+engine is provably deterministic and look-ahead-free:
+`decision(prefix) == decision(full history, evaluated at the prefix's time)`.
+**Phase 3 produces proposals and journal entries only — it cannot execute
+anything.** See [`docs/DECISIONS.md`](docs/DECISIONS.md) for the design
+record and known limitations.
 
 Edge cases covered today include: zero ticks, inverted quotes, stale ticks,
 future-stamped ticks, missing timeframes, broken symbol metadata, invisible

@@ -7,9 +7,12 @@ Implemented so far:
   decides which agents may influence decisions under each regime.
 * ``synthesis`` — the input/output contract aggregating agent evidence while
   **preserving disagreement** (supporting/opposing stances, conflicts).  The
-  reference aggregation is deterministic; Phase 3 replaces its internals with
-  the full weighted decision engine (configurable weights, entry/SL/TP
-  proposal, journal persistence).
+  reference aggregation is deterministic.
+* Phase 3 additions: ``config`` (all thresholds in one place), ``alignment``
+  (H4/H1/M15 agreement), ``levels`` (deterministic SL/TP hierarchy),
+  ``proposal`` (pure TradeProposal + entry-price providers), ``engine``
+  (the full BUY/SELL/HOLD/ABORT gate pipeline — analysis only, NEVER
+  execution), ``journal`` (answerability: every evaluation recordable).
 """
 
 from app.decision.regime import (
@@ -42,4 +45,30 @@ __all__ = [
     "relevance_of",
     "synthesize",
     "weighted_strength",
+]
+
+
+# ---- Phase 3: decision engine + proposal + journal ------------------------
+from app.decision.config import DecisionEngineConfig, TimeframeWeights
+from app.decision.engine import Decision, DecisionEngine, GateResult
+from app.decision.journal import DecisionRecord, InMemoryDecisionJournal
+from app.decision.levels import LevelPlan, compute_levels, validate_levels
+from app.decision.proposal import (
+    TickEntryProvider,
+    TradeProposal,
+)
+
+__all__ = [
+    "Decision",
+    "DecisionEngine",
+    "DecisionEngineConfig",
+    "DecisionRecord",
+    "GateResult",
+    "InMemoryDecisionJournal",
+    "LevelPlan",
+    "TickEntryProvider",
+    "TimeframeWeights",
+    "TradeProposal",
+    "compute_levels",
+    "validate_levels",
 ]
