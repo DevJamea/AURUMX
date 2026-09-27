@@ -270,15 +270,70 @@ class TestEdgeGateFailures:
         assert d.decision is DecisionAction.HOLD
         assert d.rejection_reasons == ["missing_entry_timeframe"]
 
-    def test_missing_h4_proceeds_with_renormalized_alignment(self, engine, risk_state):
-        """Documented policy: H4 context is valuable but not required — H1+M15
-        can still agree (score renormalized over present timeframes)."""
+    def test_missing_h4_strict_default_holds(self, engine, risk_state):
+        """Hardened policy: H4 (primary context) is REQUIRED by default —
+        no implicit renormalization fallback."""
+        series = standard_triple(h1_closes=linear_trend_closes(300, slope=2.0, seed=11), h1_seed=11)
+        del series[TimeFrame.H4]
+        d = engine.evaluate(make_snapshot(series, created_at=REF_TIME), risk_state=risk_state, now=REF_TIME)
+        assert d.decision is DecisionAction.HOLD
+        assert d.rejection_reasons == ["missing_primary_context"]
+        assert d.proposal is None
+        # the operator is told exactly which knob enables the alternative
+        assert any("allow_missing_h4_renormalization" in w for w in d.warnings)
+        gate = [g for g in d.gates if g["gate"] == "timeframe_policy"][0]
+        assert gate["passed"] is False and gate["reason"] == "missing_primary_context"
+
+    def test_missing_h4_explicit_renormalization_proceeds(self, risk_state):
+        """Opt-in renormalization: alignment runs over H1+M15 and the
+        decision records the fact, the missing timeframe and the effective
+        weights."""
+        from app.decision.config import TimeframePolicy
+
+        config = DecisionEngineConfig(
+            timeframe=TimeframePolicy(allow_missing_h4_renormalization=True)
+        )
+        engine = DecisionEngine(config)
         series = standard_triple(h1_closes=linear_trend_closes(300, slope=2.0, seed=11), h1_seed=11)
         del series[TimeFrame.H4]
         d = engine.evaluate(make_snapshot(series, created_at=REF_TIME), risk_state=risk_state, now=REF_TIME)
         assert d.decision is DecisionAction.BUY
-        assert d.alignment_score == pytest.approx(1.0)
+        assert d.alignment_score == pytest.approx(1.0)  # H1+M15 both agree
         assert d.proposal is not None
+        # the fact is recorded on the decision...
+        assert any("H4 (primary context) missing" in w and "renormalized" in w for w in d.warnings)
+        # ...and structurally, with the missing timeframe + effective weights
+        assert d.alignment_detail is not None
+        assert d.alignment_detail["renormalized"] is True
+        assert d.alignment_detail["missing"] == ["H4"]
+        assert d.alignment_detail["effective_weights"] == {
+            "H1": pytest.approx(0.642857), "M15": pytest.approx(0.357143),
+        }
+        gate = [g for g in d.gates if g["gate"] == "timeframe_policy"][0]
+        assert gate["passed"] is True and gate["reason"] == "h4_renormalized"
+
+    def test_h4_available_no_policy_warnings(self, engine, risk_state):
+        d = engine.evaluate(trend_up_snapshot(), risk_state=risk_state, now=REF_TIME)
+        assert d.decision is DecisionAction.BUY
+        assert not any("renormalized" in w for w in d.warnings)
+        assert d.alignment_detail["renormalized"] is False
+        assert d.alignment_detail["missing"] == []
+
+    def test_h4_policy_deterministic_both_modes(self, risk_state):
+        from app.decision.config import TimeframePolicy
+
+        series = standard_triple(h1_closes=linear_trend_closes(300, slope=2.0, seed=11), h1_seed=11)
+        del series[TimeFrame.H4]
+        snap = make_snapshot(series, created_at=REF_TIME)
+        strict = DecisionEngineConfig()  # default policy
+        renorm = DecisionEngineConfig(
+            timeframe=TimeframePolicy(allow_missing_h4_renormalization=True)
+        )
+        for config in (strict, renorm):
+            first = DecisionEngine(config).evaluate(snap, risk_state=risk_state, now=REF_TIME)
+            repeat = DecisionEngine(config).evaluate(snap, risk_state=risk_state, now=REF_TIME)
+            rebuilt = DecisionEngine(config).evaluate(snap, risk_state=risk_state, now=REF_TIME)
+            assert first.model_dump() == repeat.model_dump() == rebuilt.model_dump()
 
     def test_insufficient_h1_candles_holds(self, engine, risk_state):
         short = linear_trend_closes(50, slope=2.0, seed=11)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.core.enums import AgentDirection, TimeFrame
 from app.decision import DecisionEngineConfig
 from app.decision.alignment import compute_alignment
@@ -61,6 +63,49 @@ class TestMissingAndNeutral:
         assert alignment.missing == (TimeFrame.H4,)
         # H1 (0.45) + M15 (0.25) both agree -> renormalized score 1.0
         assert alignment.score == 1.0
+
+    def test_renormalized_flag_and_effective_weights(self):
+        """With H4 absent the renormalized weights in force are recorded:
+        H1 0.45/0.70 = 0.642857, M15 0.25/0.70 = 0.357143."""
+        up = linear_trend_closes(300, slope=2.0, seed=11)
+        series = standard_triple(h1_closes=up, h1_seed=11)
+        del series[TimeFrame.H4]
+        alignment = compute_alignment(
+            make_context(series), AgentDirection.BUY, DecisionEngineConfig()
+        )
+        assert alignment.renormalized is True
+        weights = dict(alignment.effective_weights)
+        assert weights[TimeFrame.H1] == pytest.approx(0.642857, abs=1e-6)
+        assert weights[TimeFrame.M15] == pytest.approx(0.357143, abs=1e-6)
+        assert sum(weights.values()) == pytest.approx(1.0)
+
+    def test_no_renormalization_when_all_present(self):
+        up = linear_trend_closes(300, slope=2.0, seed=11)
+        alignment = compute_alignment(
+            make_context(standard_triple(h1_closes=up, h1_seed=11)),
+            AgentDirection.BUY, DecisionEngineConfig(),
+        )
+        assert alignment.renormalized is False
+        assert dict(alignment.effective_weights) == {
+            TimeFrame.H4: pytest.approx(0.30),
+            TimeFrame.H1: pytest.approx(0.45),
+            TimeFrame.M15: pytest.approx(0.25),
+        }
+
+    def test_summary_is_json_safe_and_complete(self):
+        up = linear_trend_closes(300, slope=2.0, seed=11)
+        series = standard_triple(h1_closes=up, h1_seed=11)
+        del series[TimeFrame.H4]
+        alignment = compute_alignment(
+            make_context(series), AgentDirection.BUY, DecisionEngineConfig()
+        )
+        summary = alignment.summary()
+        assert summary["missing"] == ["H4"]
+        assert summary["renormalized"] is True
+        assert summary["effective_weights"]["H1"] == pytest.approx(0.642857, abs=1e-6)
+        import json
+
+        json.dumps(summary)
 
     def test_flat_market_is_neutral_not_opposing(self):
         ctx = make_context(standard_triple(h1_closes=[2650.0] * 300, h1_seed=7))

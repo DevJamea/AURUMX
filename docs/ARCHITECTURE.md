@@ -1,8 +1,10 @@
 # AurumX Architecture
 
 Status: Phases 1 (foundation), 2 (deterministic agent layer) and 3
-(decision engine, proposals, journal) implemented. This document describes
-the target architecture and marks what exists today.
+(decision engine, proposals, journal — hardened: explicit TP/RR semantics,
+strict H4 policy, gate classification, Phase-4 boundary contract)
+implemented. This document describes the target architecture and marks
+what exists today.
 
 ## 1. Layer model
 
@@ -94,14 +96,15 @@ limitations, examples).
 | Component | File | Notes |
 |---|---|---|
 | Engine config | `app/decision/config.py` | every threshold in one validated model; engineering defaults, not statistically optimal (see `docs/DECISIONS.md`) |
-| Timeframe alignment | `app/decision/alignment.py` | H4/H1/M15 weighted agreement; renormalizes over present TFs; strong-read flag |
-| SL/TP levels | `app/decision/levels.py` | hierarchy: structure → ATR(2×) → broker minimum; TP by RR target or opposing structure; tick-grid snapping; Phase-1 validators |
+| Timeframe alignment | `app/decision/alignment.py` | H4/H1/M15 weighted agreement; renormalization is policy-gated (strict H4 default, `decision.timeframe`); records effective weights |
+| SL/TP levels | `app/decision/levels.py` | hierarchy: structure → ATR(2×) → broker minimum; TP methods `TP_BY_RR` / `TP_BY_STRUCTURE` (structure-derived RR genuinely gated); tick-grid snapping; Phase-1 validators |
 | Trade proposal | `app/decision/proposal.py` | pure data: entry (validated ask/bid), SL, TP, RR, volume, invalidation conditions, TTL; `EntryPriceProvider` protocol (tick now, historical adapter in Phase 6) |
-| Decision engine | `app/decision/engine.py` | 14-gate pipeline; deterministic BUY/SELL/HOLD/ABORT; slices every series to candles closed by `now` (no look-ahead); agent rosters canonically ordered |
+| Decision engine | `app/decision/engine.py` | 17-gate pipeline; deterministic BUY/SELL/HOLD/ABORT; slices every series to candles closed by `now` (no look-ahead); agent rosters canonically ordered |
 | Risk sizing | `app/risk/sizing.py` | pure calculator: equity × risk% / loss-per-lot, floored to step (never rounded up); martingale structurally impossible (closed signature) |
 | Risk state | `app/risk/state.py` | caller-supplied snapshot (daily loss, limits, open/pending counts, active fingerprints); engine reads, never mutates |
 | Journal contract | `app/decision/journal.py` | `DecisionRecord` with full evidence (agents, synthesis, gates, config, snapshot ref); JSON-safe, credential-free |
 | SQLite journal | `app/storage/decision_journal.py` | WAL, indexed (ts/symbol), flat schema → PostgreSQL-ready |
+| **Phase-4 gate contract** | `app/risk/gate.py` | **interface only**: `RiskGate` Protocol (`evaluate(proposal, risk_state, account_state) -> RiskDecision`), `REQUIRED_CHECKS` (14 independent safety checks), `AccountState` input model. No implementation until Phase 4; the decision layer cannot call it (boundary tests) |
 
 See `docs/DECISIONS.md` for the Phase-3 decision record (HOLD vs ABORT
 semantics, threshold rationale, SL/TP methodology, fingerprinting,

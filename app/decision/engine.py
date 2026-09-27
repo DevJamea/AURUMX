@@ -57,7 +57,7 @@ from app.core.enums import (
 )
 from app.core.models import CandleSeries, SymbolSpec
 from app.decision.alignment import compute_alignment
-from app.decision.config import DecisionEngineConfig
+from app.decision.config import DecisionEngineConfig, TPMethod
 from app.decision.levels import compute_levels, validate_levels
 from app.decision.proposal import (
     EntryPriceProvider,
@@ -101,6 +101,10 @@ class Decision(BaseModel):
     spread_points: float | None = None
     conflict_score: float = 0.0
     alignment_score: float | None = None
+    #: structured alignment facts (score, agreeing/opposing/missing
+    #: timeframes, renormalized flag, effective weights) — journaled so the
+    #: record shows exactly which weights produced the score
+    alignment_detail: dict | None = None
     supporting_agents: list[str] = []
     opposing_agents: list[str] = []
     reasons: list[str] = []
@@ -130,6 +134,11 @@ class DecisionEngine:
     The engine owns the full analysis pipeline from the snapshot down (it
     builds the context, detects the regime, runs the agents and synthesizes)
     so the no-look-ahead slicing in step 6 cannot be bypassed.
+
+    Phase-4 hand-off: the engine's output ends at TradeProposal + journal
+    entries.  Proposals flow on to the independent risk gate
+    (app/risk/gate.py contract) which alone decides APPROVED / REJECTED /
+    EMERGENCY_STOP — the engine never calls it, and never executes.
     """
 
     def __init__(
@@ -185,7 +194,11 @@ class DecisionEngine:
         now: datetime,
         gates: list[GateResult],
     ) -> Decision:
+        extra_warnings: list[str] = []  # e.g. H4-renormalization notices
+
         def _finish(action, **kwargs) -> Decision:
+            if extra_warnings:
+                kwargs["warnings"] = [*extra_warnings, *(kwargs.get("warnings") or [])]
             return self._make_decision(snapshot, now, action, gates=gates, **kwargs)
 
         # ---- gate 1: data validity -------------------------------------
@@ -300,6 +313,45 @@ class DecisionEngine:
                 warnings=["M15 (entry timing) missing — no proposal without entry confirmation context"],
                 data_quality=DataQuality.DEGRADED,
             )
+
+        # ---- gate 6b: H4 context policy (no implicit fallback) ----------
+        # strict by default: H4 (primary context) must be present.  Only an
+        # explicit configuration allows renormalized alignment without it,
+        # and then the fact, the missing timeframe and the effective weights
+        # are recorded on the decision and in the journal.
+        renorm_warnings: list[str] = []
+        h4_present = context.has_timeframe(TimeFrame.H4) and (
+            context.features(TimeFrame.H4) is not None
+        )
+        if not h4_present:
+            policy = self.config.timeframe
+            if policy.require_h4 and not policy.allow_missing_h4_renormalization:
+                gates.append(
+                    GateResult("timeframe_policy", False, DecisionAction.HOLD, "missing_primary_context")
+                )
+                return _finish(
+                    DecisionAction.HOLD,
+                    reason="missing_primary_context",
+                    context=context,
+                    reasons=[
+                        "H4 (primary context) missing — strict policy requires it "
+                        "(decision.timeframe.require_h4=true)"
+                    ],
+                    warnings=[
+                        "enable decision.timeframe.allow_missing_h4_renormalization=true "
+                        "to proceed with renormalized alignment"
+                    ],
+                    data_quality=DataQuality.DEGRADED,
+                )
+            gates.append(
+                GateResult("timeframe_policy", True, DecisionAction.HOLD, "h4_renormalized")
+            )
+            renorm = self._renormalized_weights_note()
+            extra_warnings.append(
+                "H4 (primary context) missing — alignment renormalized over present "
+                f"timeframes ({renorm})"
+            )
+            renorm_warnings = list(extra_warnings)
 
         assessment = self._detector.detect(context)
         context = context.with_regime(assessment)
@@ -428,6 +480,7 @@ class DecisionEngine:
         decision = self._build_proposal(
             snapshot, context, results, synthesis, assessment, alignment,
             conflict_score, direction, fingerprint, setup_type, state, now, gates,
+            policy_warnings=renorm_warnings,
         )
         return decision
 
@@ -435,6 +488,7 @@ class DecisionEngine:
     def _build_proposal(
         self, snapshot, context, results, synthesis, assessment, alignment,
         conflict_score, direction, fingerprint, setup_type, state, now, gates,
+        *, policy_warnings: list[str] | None = None,
     ) -> Decision:
         symbol: SymbolSpec = snapshot.symbol
         entry = self._entry_provider.entry_price(direction, snapshot)
@@ -445,7 +499,7 @@ class DecisionEngine:
                 context=context, synthesis=synthesis, alignment=alignment,
                 conflict_score=conflict_score, fingerprint=fingerprint,
                 setup_type=setup_type, gates=gates, data_quality=DataQuality.INVALID,
-                results=results,
+                results=results, warnings=list(policy_warnings or []),
             )
 
         h1 = context.features(TimeFrame.H1)
@@ -454,7 +508,7 @@ class DecisionEngine:
         last_high = structure.features.get("last_swing_high") if structure else None
         last_low = structure.features.get("last_swing_low") if structure else None
         opposing_level = None
-        if self.config.tp_method == "structure":
+        if self.config.tp_method is TPMethod.TP_BY_STRUCTURE:
             if direction is AgentDirection.BUY and last_high and last_high.get("price"):
                 opposing_level = float(last_high["price"])
             elif direction is AgentDirection.SELL and last_low and last_low.get("price"):
@@ -478,6 +532,7 @@ class DecisionEngine:
                     f"reward:risk {levels.reward_risk:.2f} below minimum "
                     f"{self.config.minimum_rr:.2f} ({levels.tp_source})"
                 ],
+                warnings=list(policy_warnings or []),
                 context=context, synthesis=synthesis, alignment=alignment,
                 conflict_score=conflict_score, fingerprint=fingerprint,
                 setup_type=setup_type, gates=gates, results=results,
@@ -496,6 +551,7 @@ class DecisionEngine:
             return self._make_decision(
                 snapshot, now, DecisionAction.HOLD, reason="position_size_below_minimum",
                 reasons=["risk budget cannot fund the broker's minimum volume"],
+                warnings=list(policy_warnings or []),
                 context=context, synthesis=synthesis, alignment=alignment,
                 conflict_score=conflict_score, fingerprint=fingerprint,
                 setup_type=setup_type, gates=gates, results=results,
@@ -512,6 +568,7 @@ class DecisionEngine:
             return self._make_decision(
                 snapshot, now, DecisionAction.HOLD, reason="invalid_geometry",
                 reasons=geometry_issues,
+                warnings=list(policy_warnings or []),
                 context=context, synthesis=synthesis, alignment=alignment,
                 conflict_score=conflict_score, fingerprint=fingerprint,
                 setup_type=setup_type, gates=gates, results=results,
@@ -546,6 +603,7 @@ class DecisionEngine:
             snapshot, now,
             DecisionAction.BUY if direction is AgentDirection.BUY else DecisionAction.SELL,
             reasons=reasons,
+            warnings=list(policy_warnings or []),
             context=context, synthesis=synthesis, alignment=alignment,
             conflict_score=conflict_score, fingerprint=fingerprint,
             setup_type=setup_type, gates=gates, proposal=proposal,
@@ -587,6 +645,7 @@ class DecisionEngine:
             spread_points=snapshot.tick.spread_points,
             conflict_score=round(conflict_score, 6),
             alignment_score=round(alignment.score, 6) if alignment else None,
+            alignment_detail=alignment.summary() if alignment else None,
             supporting_agents=supporting,
             opposing_agents=opposing,
             reasons=reasons or ([reason] if reason else []),
@@ -602,6 +661,16 @@ class DecisionEngine:
             agent_results=[r.model_dump(mode="json") for r in (results or [])],
             synthesis_payload=synthesis.model_dump(mode="json") if synthesis else None,
         )
+
+    def _renormalized_weights_note(self) -> str:
+        """Human-readable effective weights with H4 absent (policy opt-in)."""
+        weights = self.config.timeframe_weights
+        present = {
+            tf: weights.weight_of(tf)
+            for tf in (TimeFrame.H1, TimeFrame.M15)
+        }
+        total = sum(present.values()) or 1.0
+        return ", ".join(f"{tf.value}={w / total:.3f}" for tf, w in present.items())
 
     @staticmethod
     def _conflict_score(synthesis: SynthesisOutput) -> float:

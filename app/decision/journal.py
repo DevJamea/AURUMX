@@ -33,6 +33,11 @@ class DecisionRecord(BaseModel):
     spread_points: float | None = None
     conflict_score: float = 0.0
     alignment_score: float | None = None
+    #: structured alignment facts: agreeing/opposing/MISSING timeframes,
+    #: renormalized flag and the effective weights in force (records exactly
+    #: which weights produced the score — required when H4-renormalization
+    #: is explicitly enabled)
+    alignment_detail: dict | None = None
     supporting_agents: list[str] = []
     opposing_agents: list[str] = []
     # ---- full evidence ---------------------------------------------------
@@ -68,6 +73,7 @@ class DecisionRecord(BaseModel):
             spread_points=decision.spread_points,
             conflict_score=decision.conflict_score,
             alignment_score=decision.alignment_score,
+            alignment_detail=decision.alignment_detail,
             supporting_agents=list(decision.supporting_agents),
             opposing_agents=list(decision.opposing_agents),
             agent_results=agent_results or [],

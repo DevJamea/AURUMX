@@ -63,6 +63,21 @@ class DecisionAction(StrEnum):
     ABORT = "ABORT"
 
 
+class RiskAction(StrEnum):
+    """Phase-4 RiskGate outcomes (contract defined in app/risk/gate.py).
+
+    The safety barrier answers with exactly one of these — never with a
+    modified proposal: a gate that rewrites trades is a gate that can be
+    tuned into unsafety.  APPROVED lets the proposal through unchanged;
+    REJECTED blocks it with named reasons; EMERGENCY_STOP blocks it because
+    an operator halt (persistent emergency stop / kill switch) is active.
+    """
+
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EMERGENCY_STOP = "EMERGENCY_STOP"
+
+
 class TradingMode(StrEnum):
     """Operating mode of the whole system (spec §5, §54).
 

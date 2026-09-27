@@ -10,9 +10,14 @@ Pipeline implemented:
 
 ```text
 MT5 → BrokerAdapter → MarketSnapshot → Validation → Regime → Agents
-    → Synthesis → DecisionEngine (14 gates) → RiskSizing → TradeProposal
-    → DecisionJournal
+    → Synthesis → DecisionEngine (17 gates) → RiskSizing → TradeProposal
+    → DecisionJournal                 (→ RiskGate is Phase 4 — §14, NOT built)
 ```
+
+> **Hardening pass (this revision):** §4 H4 policy made explicit (strict
+> default), §6 TP/RR semantics made explicit (`TP_BY_RR` /
+> `TP_BY_STRUCTURE`), §13 gate classification, §14 the Phase-4 RiskGate
+> contract (interface only).
 
 ---
 
@@ -32,8 +37,8 @@ session is HOLD (the market itself may reopen normally); an UNKNOWN session
 is **ABORT** — the engine never assumes UNKNOWN means OPEN (§7).
 
 Gate order is data-quality → session → freshness/report → spread → risk
-state → analysis → edge → signal → alignment → conflict → duplicate →
-entry → RR → sizing → geometry. Inputs are validated before risk state;
+state → analysis (H1 depth, M15 presence, H4 policy) → edge → signal →
+alignment → conflict → duplicate → entry → RR → sizing → geometry. Inputs are validated before risk state;
 risk state before any agent work (agents do not even run when the risk
 state blocks — visible in the journal as empty `agent_results`).
 
@@ -88,10 +93,15 @@ H4 = context (weight .30), H1 = directional primary (.45), M15 = entry (.25).
   without the primary timeframe).
 * **Missing M15** → HOLD `missing_entry_timeframe` (no entry-timing
   context → no proposal, but the data isn't broken).
-* **Missing H4** → proceed: alignment renormalizes over the present
-  timeframes (H1+M15 agreeing → 1.0). H4 is context, not a prerequisite.
-  Documented trade-off: H4 context improves quality but demanding it would
-  make the engine unusable whenever the broker's H4 feed hiccups.
+* **Missing H4** → HOLD `missing_primary_context` — **strict by default**
+  (hardening §2: no implicit fallback). The operator may explicitly enable
+  `decision.timeframe.allow_missing_h4_renormalization=true`, in which case
+  alignment renormalizes over the present timeframes (H1+M15 agreeing →
+  1.0) and **every decision and journal record carries the fact**: the
+  missing timeframe (`alignment_detail.missing`), the renormalization flag
+  and the effective weights in force (`H1=0.643, M15=0.357`), plus a
+  warning on the decision. Both modes are deterministic and tested; the
+  policy itself is journaled in `config_snapshot.timeframe`.
 
 Alignment reads are EMA20/EMA50 direction per timeframe (Phase-2 features);
 a read is "strong" when the EMA gap exceeds `strong_alignment_atr` ATRs.
@@ -118,16 +128,36 @@ which provider produced the entry via the proposal's entry fields.
    documented fallback of last resort (never an arbitrary
    "entry − 10 points").
 
-TP: `tp_method="rr"` (default) projects `target_rr × risk_distance`;
-`tp_method="structure"` targets the opposing confirmed swing level
-(falling back to the RR target when no level exists — documented).
+TP method is an explicit enum (`TPMethod`, config `tp_method`):
+
+* **`TP_BY_RR`** (`"rr"`, **the default — unchanged by the hardening
+  pass**): TP = `entry ± target_rr × risk_distance`. Deterministic and
+  geometry-clean, but the resulting RR is derived from the target ratio
+  itself, so the `minimum_rr` gate is **self-referential** for this
+  method: passing it proves valid geometry and broker distances, **not a
+  market-quality RR opportunity**. Every such proposal carries an explicit
+  note saying so (in `proposal.reasons`, hence in the journal). The gate
+  still runs for this method — it catches config contradictions
+  (`minimum_rr > target_rr`) and tick-snapping drift — but no
+  market-quality claim is made from it.
+* **`TP_BY_STRUCTURE`** (`"structure"`): TP = the opposing confirmed swing
+  level (last swing high for a long, last swing low for a short), derived
+  **independently** of the risk distance. The actual RR is computed
+  afterwards, so `minimum_rr` is a **genuine constraint**: a structure
+  target that offers less reward than the configured minimum HOLDs with
+  `insufficient_rr` (tested with real engine runs — e.g. swing 1.2 above
+  entry vs a 4.7 ATR stop → RR ≈ 0.25 → HOLD; swing 11.8 above → RR 2.51
+  → BUY). A structure level on the wrong side of entry, or closer than
+  the broker minimum, is an **invalid target**: it is used verbatim,
+  flagged with a note, and rejected by the geometry gate — never silently
+  clamped or replaced. When no opposing level exists at all, the
+  documented fallback is the RR target (never a silent methodology swap).
+
 All levels are snapped to the symbol's tick grid and validated by the
 Phase-1 validators (direction, min stop distance, tick alignment).
 `risk_distance`, `reward_distance`, `risk_reward` are computed from raw
 values **before** any rounding, and `RR < minimum_rr` → HOLD (never a BUY
-with a bad payoff). With `tp_method="rr"` the RR is ~`target_rr` by
-construction, so the `minimum_rr` gate only binds when `minimum_rr >
-target_rr` or `tp_method="structure"` — both paths are tested.
+with a bad payoff).
 
 ## 7. Sizing (§14)
 
@@ -186,10 +216,11 @@ the same candle can only produce one proposal per direction.
 
 Every evaluation — BUY, SELL, HOLD, ABORT — is recorded
 (`DecisionRecord`): decision id, timestamp, symbol, regime, session,
-spread, conflict, alignment, supporting/opposing agents, **every agent
-result**, the synthesis payload, all gate outcomes, reasons, the full
-proposal + sizing, fingerprint, setup type, a snapshot summary reference
-and the config snapshot in force. A record answers *"why did the bot
+spread, conflict, alignment (score *and* structured detail: missing
+timeframes, renormalization flag, effective weights), supporting/opposing
+agents, **every agent result**, the synthesis payload, all gate outcomes,
+reasons, the full proposal + sizing, fingerprint, setup type, a snapshot
+summary reference and the config snapshot in force. A record answers *"why did the bot
 decide this"* without re-running anything. Backends: `InMemoryDecisionJournal`
 (tests/backtests) and `SQLiteDecisionJournal` (WAL, flat schema ready to
 become PostgreSQL per spec §38). Records are JSON-safe and
@@ -206,13 +237,136 @@ validity window `created_at → expires_at` (`proposal_ttl_minutes`).
 EXPIRED after; no global state. Expiry marks the proposal *stale*, never
 cancels anything at a broker — Phase 3 sends nothing anywhere.
 
+## 13. Phase-3 gate classification (hardening §3)
+
+Every gate, its outcome and its **class**. The class tells Phase 4 which
+territory it must re-verify independently (all RISK CONTROL and PROPOSAL
+VALIDATION logic is deliberately duplicated in the Phase-4 barrier —
+defense in depth, never "the engine already checked it").
+
+| Gate | Rejection reason(s) | Outcome | Class |
+|---|---|---|---|
+| data_validity | `missing_symbol`, `invalid_tick`, `no_candle_data`, `invalid_series:*`, `missing_primary_timeframe_h1` | ABORT | DATA SAFETY |
+| session | `session_unknown` | ABORT | DATA SAFETY |
+| session | `market_closed` | HOLD | MARKET CONDITION |
+| freshness / report | `stale_tick`, `stale_candles:*`, `validation_errors` | ABORT | DATA SAFETY |
+| spread | `spread_too_high` | ABORT | MARKET CONDITION |
+| risk_state | `missing_equity` | ABORT | DATA SAFETY (input) |
+| risk_state | `daily_loss_limit`, `consecutive_losses` | ABORT | RISK CONTROL |
+| risk_state | `position_limit`, `pending_order_limit` | ABORT | RISK CONTROL |
+| analysis | `insufficient_candles` | HOLD | DATA SAFETY |
+| analysis | `missing_entry_timeframe` (M15) | HOLD | DATA SAFETY |
+| timeframe_policy | `missing_primary_context` (H4, strict default) | HOLD | DATA SAFETY (policy) |
+| edge | `no_edge`, `below_threshold` | HOLD | DECISION QUALITY |
+| signal_strength | `weak_signal` | HOLD | DECISION QUALITY |
+| timeframe_alignment | `timeframe_conflict` | HOLD | DECISION QUALITY |
+| conflict | `conflict_exceeds_tolerance` | HOLD | DECISION QUALITY |
+| duplicate_setup | `duplicate_setup` | HOLD | RISK CONTROL (anti-overtrading) |
+| entry_price | `invalid_entry_price` | ABORT | DATA SAFETY |
+| reward_risk | `insufficient_rr` | HOLD | PROPOSAL VALIDATION |
+| position_size | `position_size_below_minimum` | HOLD | PROPOSAL VALIDATION |
+| geometry | `invalid_geometry` | HOLD | PROPOSAL VALIDATION |
+
+Classification rules used:
+
+* **DATA SAFETY** — the inputs are missing, stale, insane or against
+  policy; no trustworthy decision is possible. Always ABORT except where
+  the *absence* of data is a normal market state (HOLD).
+* **MARKET CONDITION** — the market itself (session, spread) makes trading
+  inappropriate right now; the data is fine, the world isn't.
+* **DECISION QUALITY** — evidence quality gates (edge, strength,
+  alignment, conflict). Pure Phase-3 territory; Phase 4 does NOT re-check
+  these (they are opinions, not safety).
+* **RISK CONTROL** — exposure/loss/fingerprint limits. Phase 3 checks
+  them to avoid *proposing*; **Phase 4 re-verifies every one independently
+  before execution**.
+* **PROPOSAL VALIDATION** — the constructed trade's geometry, RR and
+  volume. Phase 4 re-verifies SL/TP presence, geometry and volume limits
+  on its own evidence.
+
+## 14. Phase-4 boundary — the RiskGate contract (hardening §4/§5)
+
+**Not implemented.** The contract lives in `app/risk/gate.py`
+(`RiskGate` Protocol, `RiskDecision`/`RiskCheck` models,
+`REQUIRED_CHECKS`) and is enforced by boundary tests: `app/decision`
+never imports or names the gate, and no Phase-3 code can call an
+implementation.
+
+```text
+DecisionEngine        Phase 3 — decision correctness (this document)
+      ↓
+TradeProposal         pure data; nothing sent anywhere
+      ↓
+RiskGate              Phase 4 — INDEPENDENT safety barrier
+      ↓
+RiskDecision          APPROVED / REJECTED / EMERGENCY_STOP
+      ↓
+execution service     Phase 5 — only APPROVED proposals
+```
+
+The pure contract:
+
+```python
+class RiskGate(Protocol):
+    def evaluate(
+        self,
+        proposal: TradeProposal,
+        risk_state: RiskState,
+        account_state: AccountState,
+    ) -> RiskDecision: ...
+```
+
+* Inputs are complete and pure: the proposal carries entry/SL/TP/RR,
+  volume, sizing provenance, symbol, expiry and fingerprint; `RiskState`
+  carries equity, daily loss/limit, losing streak, open/pending counts and
+  active fingerprints; `AccountState` (new, `app/risk/state.py`) carries
+  balance/equity/margin, exposure notional, `trade_allowed`,
+  `emergency_stop_active` and `kill_switch_active`. No wall clock, no
+  network, no broker calls — the same gate evaluates backtest proposals
+  unchanged.
+* Output is one of exactly `APPROVED`, `REJECTED` (with named failed
+  `RiskCheck`s) or `EMERGENCY_STOP` (operator halt active). The gate
+  **never modifies a proposal** — a gate that rewrites trades is a gate
+  that can be tuned into unsafety.
+* The gate is **fail-closed**: a check that cannot be evaluated (missing
+  data) is a FAILED check.
+
+**Phase 4 must independently verify (REQUIRED_CHECKS, hardening §5) —
+never assuming Phase 3 already checked anything:**
+
+1. `max_risk_per_trade` — proposal risk ≤ configured % of equity
+2. `max_total_exposure` — open exposure + proposal ≤ limit
+3. `daily_loss_limit` — today's loss budget
+4. `consecutive_loss_protection` — losing-streak stand-down
+5. `max_open_positions`
+6. `max_pending_orders`
+7. `max_spread` — current quoted spread vs limit
+8. `symbol_restriction` — gold-only
+9. `volume_limits` — volume_min ≤ vol ≤ volume_max, step-aligned
+10. `sl_presence` — a usable stop loss exists
+11. `tp_validity` — TP present and geometrically valid
+12. `emergency_stop` — persistent operator stop
+13. `kill_switch` — global kill switch
+14. `account_safety` — account state allows trading (margin, trade mode)
+
+The principle:
+
+```text
+Phase 3 = decision correctness   (is this a good trade to propose?)
+Phase 4 = independent safety barrier (is this trade SAFE to execute?)
+```
+
+The engine's risk gates exist so the system does not *propose* unsafe
+trades; the RiskGate exists so it cannot *execute* them. The duplication
+is deliberate (defense in depth).
+
 ## Known limitations
 
 * Thresholds unvalidated on historical data (see §2) — Phase 6 walk-forward
   will tune them.
-* `tp_method="rr"` makes the RR gate mostly tautological (RR ≈ target by
-  construction); it binds under `tp_method="structure"` or when
-  `minimum_rr > target_rr`.
+* With `TP_BY_RR` (the default) the RR gate is self-referential (RR ≈
+  target by construction) — documented on every such proposal; use
+  `TP_BY_STRUCTURE` for a market-derived RR (see §6).
 * H1-only regime/volatility inputs: the detector reads the primary
   timeframe; M15/H4 influence decisions through alignment and agent
   features only.
@@ -220,5 +374,7 @@ cancels anything at a broker — Phase 3 sends nothing anywhere.
 * The repo does not pass `ruff format --check` (never did — Phase 1/2
   established `ruff check` as the lint bar); reformatting 60+ files is
   deferred to a dedicated style-only commit.
-* Missing H4 proceeds (§4) — the journal records the missing timeframe in
-  the snapshot reference so post-hoc analysis can filter those decisions.
+* H4 is strict by default (§4): a broker feed hiccup on H4 now HOLDs the
+  engine. Operators who accept the quality trade-off must opt in
+  explicitly; renormalized decisions are fully journaled (missing
+  timeframe + effective weights).

@@ -39,3 +39,43 @@ class RiskState(BaseModel):
     @property
     def has_equity(self) -> bool:
         return self.equity is not None and self.equity > 0
+
+
+class AccountState(BaseModel):
+    """Execution-side account + safety state for the Phase-4 RiskGate.
+
+    Pure snapshot supplied BY THE CALLER (the worker/execution layer fills
+    it from the broker account; backtests supply it directly) — the gate
+    never fetches it itself.  Together with ``RiskState`` and the
+    ``TradeProposal`` this is the complete input triple of the Phase-4
+    safety barrier: enough information to independently reject a dangerous
+    proposal (margin, exposure, halts, account sanity) without trusting
+    anything the decision layer concluded.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+
+    balance: float = Field(default=0.0)
+    equity: float = Field(default=0.0)
+    margin: float = Field(default=0.0)
+    margin_free: float = Field(default=0.0)
+    margin_level: float | None = Field(default=None)
+    leverage: int = Field(default=100, ge=1)
+    currency: str = "USD"
+    #: currently open positions (count; cross-checked against RiskState)
+    open_positions: int = Field(default=0, ge=0)
+    #: currently pending orders (count; cross-checked against RiskState)
+    pending_orders: int = Field(default=0, ge=0)
+    #: monetary value of open positions (total exposure input)
+    open_positions_notional: float = Field(default=0.0, ge=0)
+    #: account/terminal allows trading at all (trade mode, connection state)
+    trade_allowed: bool = True
+    #: persistent operator emergency stop is active (blocks everything)
+    emergency_stop_active: bool = False
+    #: global kill switch is active (config-level halt, blocks everything)
+    kill_switch_active: bool = False
+
+    @property
+    def has_sane_equity(self) -> bool:
+        """Equity present and positive (a gate input sanity primitive)."""
+        return self.equity > 0

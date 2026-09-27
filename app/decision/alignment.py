@@ -35,11 +35,29 @@ class TimeframeAlignment:
     score: float = 0.0  # weighted agreement in [0, 1]
     opposing: tuple[TimeFrame, ...] = field(default_factory=tuple)
     agreeing: tuple[TimeFrame, ...] = field(default_factory=tuple)
+    #: True when an expected timeframe was absent and the score was computed
+    #: over the remaining ones (policy-gated: the engine only allows this
+    #: when decision.timeframe.allow_missing_h4_renormalization is set)
+    renormalized: bool = False
+    #: weights actually in force after renormalization — (timeframe, weight)
+    #: pairs summing to 1.0 over the present timeframes
+    effective_weights: tuple[tuple[TimeFrame, float], ...] = field(default_factory=tuple)
 
     @property
     def entry_timeframe_opposes(self) -> bool:
         """True when any ENTRY-role timeframe (M15) actively opposes."""
         return bool(self.opposing)
+
+    def summary(self) -> dict:
+        """JSON-safe summary for the Decision / journal record."""
+        return {
+            "score": self.score,
+            "agreeing": [tf.value for tf in self.agreeing],
+            "opposing": [tf.value for tf in self.opposing],
+            "missing": [tf.value for tf in self.missing],
+            "renormalized": self.renormalized,
+            "effective_weights": {tf.value: round(w, 6) for tf, w in self.effective_weights},
+        }
 
 
 def _read(context: MarketContext, timeframe: TimeFrame, config: DecisionEngineConfig) -> TimeframeRead:
@@ -97,10 +115,22 @@ def compute_alignment(
             opposing.append(read.timeframe)
 
     score = agree_sum / weight_sum if weight_sum > 0 else 0.0
+
+    # effective weights in force: the configured weights renormalized over
+    # the expected timeframes that are actually present
+    present = [tf for tf in expected if tf not in missing]
+    present_weight = {tf: config.timeframe_weights.weight_of(tf) for tf in present}
+    total_weight = sum(present_weight.values())
+    effective = tuple(
+        (tf, w / total_weight) for tf, w in present_weight.items()
+    ) if total_weight > 0 else ()
+
     return TimeframeAlignment(
         reads=tuple(reads),
         missing=tuple(missing),
         score=round(score, 6),
         opposing=tuple(opposing),
         agreeing=tuple(agreeing),
+        renormalized=bool(missing),
+        effective_weights=effective,
     )

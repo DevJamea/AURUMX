@@ -9,13 +9,24 @@ SL hierarchy (most reliable first):
    from the verified Phase-1 symbol metadata; a fallback of last resort,
    never an arbitrary constant.
 
-TP methods (config ``tp_method``):
+TP methods (config ``tp_method``, enum ``TPMethod``):
 
-* ``rr`` (default): ``entry ± target_rr × risk_distance`` — a documented
-  risk/reward target;
-* ``structure``: the nearest opposing confirmed swing level (resistance for
-  longs, support for shorts), floored to at least ``minimum_rr`` by the
-  engine's RR gate (the gate HOLDs rather than silently widening a target).
+* ``TP_BY_RR`` (``"rr"``, the default — unchanged by the hardening pass):
+  TP = ``entry ± target_rr × risk_distance``.  Deterministic and
+  geometry-clean, but the resulting RR is derived from the target ratio
+  itself, so the engine's ``minimum_rr`` gate is **self-referential** for
+  this method: passing it proves valid geometry and broker distances, NOT a
+  market-quality RR opportunity.  This is recorded as a note on every such
+  proposal and documented in docs/DECISIONS.md §6.
+* ``TP_BY_STRUCTURE`` (``"structure"``): TP = the opposing confirmed swing
+  level (resistance for longs, support for shorts), derived independently
+  of the risk distance.  The actual RR is computed afterwards, and the
+  engine's ``minimum_rr`` gate is then a genuine constraint — it HOLDs
+  (``insufficient_rr``) when the structure offers less reward than the
+  configured minimum.  An opposing level on the wrong side of entry (or
+  closer than the broker minimum) is an INVALID target: it is used
+  verbatim, flagged with a note, and rejected by the geometry gate — never
+  silently clamped or replaced.
 
 Every level is validated against direction, tick size, digits, stops level
 and freeze level — reusing the verified Phase-1 ``SymbolSpec`` metadata.
@@ -27,7 +38,7 @@ from dataclasses import dataclass
 
 from app.core.enums import AgentDirection
 from app.core.models import SymbolSpec
-from app.decision.config import DecisionEngineConfig
+from app.decision.config import DecisionEngineConfig, TPMethod
 
 
 @dataclass(frozen=True)
@@ -141,17 +152,40 @@ def compute_levels(
         stop_loss = _round_to_tick(entry + sl_distance, symbol)
 
     # ---- take profit -------------------------------------------------------
-    if config.tp_method == "structure" and opposing_structure_level is not None:
+    if config.tp_method is TPMethod.TP_BY_STRUCTURE and opposing_structure_level is not None:
+        # the structure target is used VERBATIM (tick-snapped only): it is
+        # never clamped to the profitable side or padded to the broker
+        # minimum — a level that needs padding is not a level the market
+        # offered.  Invalid targets (wrong side / too close) are flagged
+        # here and rejected by validate_levels at the geometry gate.
         target = opposing_structure_level
-        # keep the structure target on the profitable side, at least the
-        # broker minimum away
-        if direction is AgentDirection.BUY:
-            target = max(target, entry + minimum)
-        else:
-            target = min(target, entry - minimum)
         tp_source = "structure_level"
         take_profit = _round_to_tick(target, symbol)
-        notes.append(f"TP at opposing structure level {opposing_structure_level:.2f}")
+        if direction is AgentDirection.BUY and target <= entry:
+            notes.append(
+                f"INVALID structure target {target:.2f} not above entry {entry:.2f} for BUY"
+            )
+        elif direction is AgentDirection.SELL and target >= entry:
+            notes.append(
+                f"INVALID structure target {target:.2f} not below entry {entry:.2f} for SELL"
+            )
+        elif abs(target - entry) < minimum:
+            notes.append(
+                f"structure target {target:.2f} closer than broker minimum {minimum:.2f}"
+            )
+        else:
+            notes.append(f"TP at opposing structure level {opposing_structure_level:.2f}")
+    elif (
+        config.tp_method is TPMethod.TP_BY_STRUCTURE and opposing_structure_level is None
+    ):
+        # no opposing level exists: documented fallback to the RR target
+        tp_source = "rr_target"
+        reward = config.target_rr * sl_distance
+        if direction is AgentDirection.BUY:
+            take_profit = _round_to_tick(entry + reward, symbol)
+        else:
+            take_profit = _round_to_tick(entry - reward, symbol)
+        notes.append("no opposing structure level — TP falls back to RR target")
     else:
         tp_source = "rr_target"
         reward = config.target_rr * sl_distance
@@ -160,6 +194,10 @@ def compute_levels(
         else:
             take_profit = _round_to_tick(entry - reward, symbol)
         notes.append(f"TP at {config.target_rr:g}x risk (RR target)")
+        notes.append(
+            "RR gate is self-referential for TP_BY_RR (TP derived from the "
+            "target ratio) — it validates geometry, not market-quality RR"
+        )
 
     # ---- distances / RR (unrounded inputs, one final rounding) ------------
     risk_distance = abs(entry - stop_loss)

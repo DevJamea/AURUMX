@@ -143,6 +143,62 @@ class TestFullProvenance:
         assert "open" not in blob
 
 
+class TestH4RenormalizationRecording:
+    """Hardening §2: when renormalization is explicitly enabled, the journal
+    must record the missing timeframe and the effective weights in force."""
+
+    def _renorm_decision(self, journal):
+        from app.core.enums import TimeFrame
+        from app.decision.config import TimeframePolicy
+
+        engine = DecisionEngine(
+            DecisionEngineConfig(
+                timeframe=TimeframePolicy(allow_missing_h4_renormalization=True)
+            ),
+            journal=journal,
+        )
+        series = standard_triple(
+            h1_closes=linear_trend_closes(300, slope=2.0, seed=11), h1_seed=11,
+        )
+        del series[TimeFrame.H4]
+        return engine.evaluate(
+            make_snapshot(series, created_at=REF_TIME), risk_state=STATE, now=REF_TIME,
+        )
+
+    def test_journal_records_missing_timeframe_and_weights(self):
+        journal = InMemoryDecisionJournal()
+        d = self._renorm_decision(journal)
+        assert d.decision is DecisionAction.BUY
+        r = journal.by_decision_id(d.decision_id)
+        assert r is not None
+        # the fact is journaled as a warning...
+        assert any("H4" in w and "renormalized" in w for w in r.warnings)
+        # ...and structurally: missing timeframe + effective weights
+        assert r.alignment_detail["renormalized"] is True
+        assert r.alignment_detail["missing"] == ["H4"]
+        assert r.alignment_detail["effective_weights"]["H1"] == pytest.approx(0.642857, abs=1e-6)
+        assert r.alignment_detail["effective_weights"]["M15"] == pytest.approx(0.357143, abs=1e-6)
+        # the policy in force is part of the config snapshot
+        assert r.config_snapshot["timeframe"]["allow_missing_h4_renormalization"] is True
+
+    def test_strict_mode_hold_is_journaled_with_reason(self):
+        from app.core.enums import TimeFrame
+
+        journal = InMemoryDecisionJournal()
+        engine = DecisionEngine(DecisionEngineConfig(), journal=journal)
+        series = standard_triple(
+            h1_closes=linear_trend_closes(300, slope=2.0, seed=11), h1_seed=11,
+        )
+        del series[TimeFrame.H4]
+        d = engine.evaluate(
+            make_snapshot(series, created_at=REF_TIME), risk_state=STATE, now=REF_TIME,
+        )
+        assert d.decision is DecisionAction.HOLD
+        r = journal.by_decision_id(d.decision_id)
+        assert r.rejection_reasons == ["missing_primary_context"]
+        assert any("allow_missing_h4_renormalization" in w for w in r.warnings)
+
+
 class TestInMemoryJournal:
     def test_recent_is_newest_first(self):
         journal = InMemoryDecisionJournal()

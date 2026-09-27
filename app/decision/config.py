@@ -9,6 +9,8 @@ use.
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.enums import TimeFrame
@@ -41,6 +43,46 @@ class TimeframeWeights(BaseModel):
         }.get(timeframe, 0.0)
 
 
+class TPMethod(Enum):
+    """Take-profit construction method (config ``tp_method``).
+
+    TP_BY_RR
+        TP = entry ± ``target_rr`` × risk_distance.  Deterministic and
+        geometry-clean, but the RR gate is then **self-referential**: the
+        target is derived from the very ratio the gate checks, so passing it
+        cannot be read as evidence of a market-quality RR opportunity — only
+        that geometry and broker distances are valid.
+
+    TP_BY_STRUCTURE
+        TP = the opposing confirmed structure level (last swing high for a
+        long, last swing low for a short), derived INDEPENDENTLY of the
+        risk distance.  The actual RR is computed afterwards and the
+        ``minimum_rr`` gate is then a genuine constraint (it HOLDs when the
+        structure offers less reward than the configured minimum).
+    """
+
+    TP_BY_RR = "rr"
+    TP_BY_STRUCTURE = "structure"
+
+
+class TimeframePolicy(BaseModel):
+    """H4-context policy — no implicit fallback (hardening requirement).
+
+    Default is strict: H4 is required.  A snapshot without usable H4 data
+    HOLDs with ``missing_primary_context`` unless the operator explicitly
+    enables renormalization, in which case alignment renormalizes over the
+    present timeframes and every decision/journal record carries the fact,
+    the missing timeframe and the effective weights in force.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: H4 (primary context) must be present (strict mode)
+    require_h4: bool = True
+    #: explicit opt-in: proceed without H4 using renormalized weights
+    allow_missing_h4_renormalization: bool = False
+
+
 class DecisionEngineConfig(BaseModel):
     """All decision-engine thresholds.
 
@@ -69,6 +111,8 @@ class DecisionEngineConfig(BaseModel):
 
     # ---- timeframe alignment --------------------------------------------
     timeframe_weights: TimeframeWeights = Field(default_factory=TimeframeWeights)
+    #: H4-context policy: strict by default (no implicit renormalization)
+    timeframe: TimeframePolicy = Field(default_factory=TimeframePolicy)
     #: |EMA20-EMA50| in ATR beyond which a timeframe read counts as "strong"
     strong_alignment_atr: float = Field(default=0.50, gt=0, le=10.0)
 
@@ -76,8 +120,10 @@ class DecisionEngineConfig(BaseModel):
     #: SL hierarchy: 1) structure invalidation level, 2) ATR distance,
     #: 3) broker minimum distance (fallback of last resort, documented)
     atr_stop_multiple: float = Field(default=2.00, gt=0, le=20.0)
-    #: TP method: "rr" (risk/reward target) or "structure" (opposing level)
-    tp_method: str = Field(default="rr", pattern="^(rr|structure)$")
+    #: TP method (TPMethod.TP_BY_RR / TPMethod.TP_BY_STRUCTURE; serialized
+    #: as "rr" / "structure" — the default is unchanged by the hardening
+    #: pass and remains TP_BY_RR, documented in docs/DECISIONS.md §6)
+    tp_method: TPMethod = Field(default=TPMethod.TP_BY_RR)
     #: reward multiple of risk distance used for TP when tp_method == "rr"
     target_rr: float = Field(default=2.00, gt=0, le=20.0)
 

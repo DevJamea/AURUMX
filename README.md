@@ -34,7 +34,7 @@ DRY_RUN=true
 |---|---|---|
 | 1 | Foundation: config, logging, events, models, MT5 adapter (read-only), symbol discovery, tick/candle validation, market snapshots, diagnostics | ✅ **complete — 156 tests passing** |
 | 2 | Analysis agents (trend, momentum, structure, liquidity, volatility, mean-reversion, macro) | ✅ **complete — 359 tests passing** |
-| 3 | Decision engine: deterministic gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal | ✅ **complete — 526 tests passing; proposal-only, no execution** |
+| 3 | Decision engine: deterministic gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal (+ hardening: explicit TP/RR semantics, strict H4 policy, gate classification, Phase-4 RiskGate contract) | ✅ **complete — 587 tests passing; proposal-only, no execution** |
 | 4 | Hard risk gate, kill switch, exposure limits, emergency stop | ⏳ next |
 | 5 | Execution (orders, BE, partial close, trailing, pending orders) | planned |
 | 6 | Backtesting + walk-forward | planned |
@@ -105,7 +105,7 @@ app/
 ├── market/     symbol discovery, tick/candle validation, market snapshots
 ├── agents/     7 deterministic analysis agents + feature layer (Phase 2, done)
 ├── decision/   regime, synthesis, gates, proposals, journal  (Phases 2–3 done)
-├── risk/       sizing + risk state (done) · hard gate + kill switch (Phase 4)
+├── risk/       sizing + risk state + gate CONTRACT (done) · gate implementation (Phase 4)
 ├── execution/  order lifecycle                        (Phase 5)
 ├── backtest/   no-look-ahead simulator + walk-forward (Phase 6)
 ├── storage/    decision journal (SQLite, done) → PostgreSQL (later)
@@ -135,7 +135,7 @@ zero volume / bad ticks — all fail safe to NEUTRAL).  See
 [`docs/AGENTS.md`](docs/AGENTS.md) for the agent reference.
 
 **Phase 3 (decision engine)** adds the deterministic decision layer on top:
-a 14-gate pipeline that turns agent evidence into BUY / SELL / HOLD / ABORT
+a 17-gate pipeline that turns agent evidence into BUY / SELL / HOLD / ABORT
 with a full audit trail — data-quality and session gates (fail-closed:
 UNKNOWN session or excessive spread means ABORT, never "assume it's fine"),
 timeframe-alignment and conflict gates that preserve disagreement, SL/TP
@@ -146,8 +146,17 @@ complete evidence needed to answer *why* the bot decided anything. The
 engine is provably deterministic and look-ahead-free:
 `decision(prefix) == decision(full history, evaluated at the prefix's time)`.
 **Phase 3 produces proposals and journal entries only — it cannot execute
-anything.** See [`docs/DECISIONS.md`](docs/DECISIONS.md) for the design
-record and known limitations.
+anything.** The hardening pass made the TP/RR semantics explicit
+(`TP_BY_RR` default with a documented self-referential RR gate;
+`TP_BY_STRUCTURE` with a genuinely enforced minimum RR), made missing-H4
+handling a strict policy decision (HOLD `missing_primary_context` unless
+renormalization is explicitly enabled — and then journaled with the
+effective weights), classified every gate, and contracted the Phase-4
+boundary (`app/risk/gate.py`: `RiskGate.evaluate(proposal, risk_state,
+account_state) -> APPROVED / REJECTED / EMERGENCY_STOP`, interface only —
+Phase 4 re-verifies all 14 safety checks independently). See
+[`docs/DECISIONS.md`](docs/DECISIONS.md) for the design record and known
+limitations.
 
 Edge cases covered today include: zero ticks, inverted quotes, stale ticks,
 future-stamped ticks, missing timeframes, broken symbol metadata, invisible

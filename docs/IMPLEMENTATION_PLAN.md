@@ -139,7 +139,7 @@ The spec's tree is followed with two adaptations (allowed by §6):
 |---|---|---|
 | **1 — Foundation** | structure, config, structured logging, events, domain models, `BrokerInterface`, `MT5Broker` (read-only), symbol discovery + verification, tick/candle validation, market snapshot, diagnostics script, test suite | **DONE — all tests pass** |
 | 2 — Agents | Trend, Momentum, Structure, Liquidity, Volatility, Mean Reversion, Macro interface + synthesis agent interface; agent registry & weights config | **DONE — 203 new tests, all passing** |
-| 3 — Decision engine | deterministic engine + gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal | **DONE — 167 new tests, all passing; proposal-only, NO execution** |
+| 3 — Decision engine | deterministic engine + gates, trade proposals, sizing, SL/TP, risk-state interface, anti-overtrading, decision journal; hardened (explicit TP/RR, strict H4 policy, gate classification, Phase-4 contract) | **DONE — 228 tests (167 + 61 hardening), all passing; proposal-only, NO execution** |
 | 4 — Risk | hard risk gate, position sizing, limits, daily loss, spread/exposure checks, kill switch | pending |
 | 5 — Execution | order validation → risk check → `order_check` → send → verify → reconcile; BE, partial close, trailing, pending orders; dry-run + paper broker | pending |
 | 6 — Backtesting | no-look-ahead simulator, metrics, reports, walk-forward splits, agent performance tracking | pending |
@@ -255,6 +255,35 @@ The spec's tree is followed with two adaptations (allowed by §6):
 - [x] **526 tests passing** (156 + 203 + 167), ruff clean
 - [x] **Phase 3 does NOT execute trades** — no `order_send` anywhere in the
       decision layer; execution remains Phase 5 behind the risk gate
+
+### Phase-3 hardening pass (complete)
+
+Post-review hardening of the decision layer (no Phase-4 work, no execution):
+
+- [x] TP/RR semantics explicit: `TPMethod.TP_BY_RR` (default, unchanged) /
+      `TPMethod.TP_BY_STRUCTURE`; the RR gate's self-referential nature for
+      TP_BY_RR is documented on every such proposal; structure-derived TP
+      produces a market-determined RR that the `minimum_rr` gate genuinely
+      enforces (engine-level tests prove HOLD/BLOCK at the threshold)
+- [x] Invalid structure targets (wrong side of entry / below broker
+      minimum) are used verbatim, flagged and rejected — never clamped
+- [x] Missing H4 is now a policy decision: strict default
+      (`require_h4=true`, `allow_missing_h4_renormalization=false`) →
+      HOLD `missing_primary_context`; explicit opt-in renormalization
+      journals the missing timeframe and the effective weights in force;
+      both modes deterministic and tested
+- [x] Every Phase-3 gate classified (DATA SAFETY / MARKET CONDITION /
+      DECISION QUALITY / RISK CONTROL / PROPOSAL VALIDATION) —
+      docs/DECISIONS.md §13
+- [x] Phase-4 boundary documented and contracted: `app/risk/gate.py`
+      (`RiskGate.evaluate(proposal, risk_state, account_state) ->
+      RiskDecision{APPROVED|REJECTED|EMERGENCY_STOP}`, `REQUIRED_CHECKS`
+      with the 14 independent verifications, `AccountState` input model);
+      interface only — no implementation
+- [x] Boundary enforced by tests: decision layer cannot reach the gate or
+      any execution surface; no MT5/network/wall-clock in decision or risk
+      layers (AST checks)
+- [x] **587 tests passing** (526 + 61 hardening), ruff clean
 
 ### Validation semantics note
 

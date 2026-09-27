@@ -74,6 +74,44 @@ class TestTimeframeWeights:
         assert w.total == pytest.approx(1.5)
 
 
+class TestTimeframePolicy:
+    """Hardening §2: H4 context is required unless explicitly relaxed."""
+
+    def test_strict_defaults(self):
+        from app.decision.config import TimeframePolicy
+
+        policy = TimeframePolicy()
+        assert policy.require_h4 is True
+        assert policy.allow_missing_h4_renormalization is False
+
+    def test_renormalization_is_explicit_opt_in(self):
+        from app.decision.config import TimeframePolicy
+
+        policy = TimeframePolicy(allow_missing_h4_renormalization=True)
+        assert policy.require_h4 is True  # H4 still "required" as policy;
+        assert policy.allow_missing_h4_renormalization is True  # renorm is the escape hatch
+
+    def test_no_extra_fields(self):
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        from app.decision.config import TimeframePolicy
+
+        with _pytest.raises(ValidationError):
+            TimeframePolicy(sneaky_field=1)
+
+    def test_policy_reachable_as_decision_timeframe(self):
+        config = DecisionEngineConfig()
+        assert config.timeframe.require_h4 is True
+        assert config.timeframe.allow_missing_h4_renormalization is False
+
+    def test_policy_is_journaled_in_config_snapshot(self):
+        dumped = DecisionEngineConfig().model_dump(mode="json")
+        assert dumped["timeframe"] == {
+            "require_h4": True, "allow_missing_h4_renormalization": False,
+        }
+
+
 class TestFromAppConfig:
     def test_risk_settings_flow_from_app_config(self):
         app = AppConfig(
