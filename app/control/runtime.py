@@ -259,8 +259,6 @@ class EngineRuntime:
         risk_decision = self._last_risk_decision
         self._last_proposal = None
         self._last_risk_decision = None
-        if proposal is not None and proposal.is_expired(self.clock()):
-            raise ExecutionRefused("proposal_expired: approved proposal has expired")
         if not self.control.started:
             raise EngineNotStartedError("engine is stopped — POST /control/start first")
         halts = self.control.halt_flags()
@@ -284,6 +282,14 @@ class EngineRuntime:
             deviation_points=self.execution_service.config.deviation_points,
             type_filling=self.execution_service.config.type_filling,
         )
+        if proposal.is_expired(self.clock()):
+            # refused AND journaled — the attempt must leave an audit record
+            self.execution_service.reject(
+                request,
+                "proposal_expired: approved proposal has expired "
+                f"(expires_at {proposal.expires_at.isoformat()})",
+            )
+            raise ExecutionRefused("proposal_expired: approved proposal has expired")
         self.system_state = SystemState.EXECUTING
         try:
             return self.execution_service.execute(request, risk_decision)

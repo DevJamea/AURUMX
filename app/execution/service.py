@@ -170,16 +170,23 @@ class ExecutionService:
         now = self._clock()
 
         # Idempotency is checked before every other gate.  The journal is the
-        # authority, so this also survives process restarts.
-        prior = self._journal.by_request_id(request.request_id)
+        # authority (durable journals make this survive restarts).  Only a
+        # request that actually REACHED the broker counts as attempted:
+        # blocked / DRY_RUN records must not stop a later real attempt.  The
+        # rejection is a fresh NOT_ATTEMPTED result — it never carries the
+        # tickets or fill price of the original attempt.
+        prior = self._journal.find_attempted(request.request_id)
         if prior is not None:
-            duplicate = prior.model_copy(update={
-                "status": ExecutionStatus.NOT_ATTEMPTED,
-                "message": "duplicate_request: request_id has already been attempted",
-                "reasons": ["duplicate_request"],
-                "timestamp": now,
-            })
-            return self._finish(request, duplicate, now, event=EXECUTION_REJECTED)
+            return self._finish(
+                request,
+                self._blocked(
+                    request,
+                    "duplicate_request: request_id already reached the broker "
+                    f"(earlier status {prior.status.value})",
+                ),
+                now,
+                event=EXECUTION_REJECTED,
+            )
 
         # ---- 1. risk-decision verification (spec §11) ---------------------
         reason = self._verify_decision(request, decision)
@@ -243,6 +250,17 @@ class ExecutionService:
 
         # ---- 4b. MT5 path (5C): demo-guarded real execution ----------------
         return self._execute_mt5(request, now)
+
+    def reject(self, request: ExecutionRequest, reason: str) -> ExecutionResult:
+        """Journal a pre-broker refusal decided by the caller (for example an
+        expired proposal).  Nothing is sent; the attempt is still recorded so
+        the audit trail shows it."""
+        return self._finish(
+            request,
+            self._blocked(request, reason),
+            self._clock(),
+            event=EXECUTION_REJECTED,
+        )
 
     # ------------------------------------------------------------------
     # stage 1: approval verification

@@ -132,7 +132,13 @@ class TestReconciliationLoop:
         inject_trend(fake_mt5)
         runtime.control.start()
         runtime.evaluate_cycle()
+        # approvals are single-use: keep the evidence to build a SECOND,
+        # distinct request below (a different request_id, so the idempotency
+        # guard cannot mask the reconciliation guard under test)
+        proposal, decision = runtime._last_proposal, runtime._last_risk_decision
         runtime.execute_approved()
+        assert runtime._last_proposal is None
+        assert runtime._last_risk_decision is None
         assert runtime.guard.execution_allowed is True
 
         # the position disappears (e.g. SL hit) -> mismatch -> halt
@@ -140,11 +146,15 @@ class TestReconciliationLoop:
         report = runtime.reconcile()
         assert not report.clean
         assert runtime.guard.execution_allowed is False
-        # Approvals are intentionally single-use and are cleared after the
-        # previous execution attempt; reconciliation remains independently
-        # halted until explicitly acknowledged.
-        assert runtime._last_proposal is None
-        assert runtime._last_risk_decision is None
+        # the execution service itself blocks (independent of the runtime):
+        from app.execution import ExecutionRequest
+
+        request = ExecutionRequest.from_proposal(
+            proposal, risk_decision_id=decision.gate_decision_id
+        ).model_copy(update={"request_id": "req-distinct-after-mismatch"})
+        blocked = runtime.execution_service.execute(request, decision)
+        assert blocked.status.value == "NOT_ATTEMPTED"
+        assert "reconciliation_halt" in blocked.message
 
         # explicit, audited acknowledgement restores execution permission
         assert runtime.acknowledge_reconciliation("position closed at SL") is True

@@ -17,6 +17,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.enums import Direction, TradingMode
 from app.execution.contracts import ExecutionRequest, ExecutionResult, ExecutionStage, ExecutionStatus
 
+#: statuses that mean the request actually reached (or may have reached) the
+#: broker.  Only these make a ``request_id`` "already attempted": blocked
+#: (NOT_ATTEMPTED), DRY_RUN and duplicate-rejection records never touched the
+#: broker, so they must not stop a later real attempt (e.g. DRY_RUN -> DEMO
+#: for the same approved proposal, or "trading was disabled, now enabled").
+ATTEMPTED_STATUSES: frozenset[ExecutionStatus] = frozenset(
+    {
+        ExecutionStatus.FILLED,
+        ExecutionStatus.PARTIALLY_FILLED,
+        ExecutionStatus.UNKNOWN,
+        ExecutionStatus.SEND_FAILED,
+        ExecutionStatus.REJECTED_BY_BROKER,
+        ExecutionStatus.CHECK_FAILED,
+        ExecutionStatus.ACCEPTED,
+    }
+)
+
 
 class ExecutionRecord(BaseModel):
     """One journaled execution attempt — complete provenance, no secrets."""
@@ -84,6 +101,11 @@ class ExecutionRecord(BaseModel):
         )
 
     @property
+    def reached_broker(self) -> bool:
+        """True when this attempt reached (or may have reached) the broker."""
+        return self.status in ATTEMPTED_STATUSES
+
+    @property
     def claims_real_fill(self) -> bool:
         """True only for statuses backed by verified broker state (§20)."""
         return self.status in (ExecutionStatus.FILLED, ExecutionStatus.PARTIALLY_FILLED)
@@ -99,7 +121,15 @@ class ExecutionJournal(Protocol):
 
     def record(self, record: ExecutionRecord) -> None: ...
 
-    def by_request_id(self, request_id: str) -> ExecutionRecord | None: ...
+    def by_request_id(self, request_id: str) -> ExecutionRecord | None:
+        """The most recent record for ``request_id`` (any status)."""
+        ...
+
+    def find_attempted(self, request_id: str) -> ExecutionRecord | None:
+        """The first record for ``request_id`` that reached the broker
+        (status in ``ATTEMPTED_STATUSES``), else None — the idempotency
+        authority."""
+        ...
 
     def recent(self, limit: int = 50) -> list[ExecutionRecord]: ...
 
@@ -121,6 +151,12 @@ class InMemoryExecutionJournal:
                 return record
         return None
 
+    def find_attempted(self, request_id: str) -> ExecutionRecord | None:
+        for record in self._records:
+            if record.request_id == request_id and record.reached_broker:
+                return record
+        return None
+
     def recent(self, limit: int = 50) -> list[ExecutionRecord]:
         return list(self._records)[-limit:][::-1]
 
@@ -132,6 +168,7 @@ class InMemoryExecutionJournal:
 
 
 __all__ = [
+    "ATTEMPTED_STATUSES",
     "ExecutionJournal",
     "ExecutionRecord",
     "ExecutionRequest",

@@ -64,9 +64,17 @@ class TestDryRunPipeline:
         assert outcome["decision"]["decision"] == "BUY"
         assert outcome["risk"]["action"] == "APPROVED"
 
+        # proposal immutability across the whole pipeline: snapshot before
+        # execution (the runtime clears its reference afterwards: single-use)
+        proposal = runtime._last_proposal
+        proposal_snapshot = proposal.model_dump()
+        assert proposal.suggested_volume > 0
+        assert proposal.entry_price > 0
+
         result = runtime.execute_approved()
         assert result.status.value == "DRY_RUN"
         assert result.mode is TradingMode.DRY_RUN
+        assert proposal.model_dump() == proposal_snapshot
 
         # THE DRY_RUN INVARIANT (§14): order_send/order_check never called
         assert fake_mt5.order_sends == []

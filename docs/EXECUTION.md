@@ -78,6 +78,32 @@ in actual MT5 state with matching direction/volume/SL/TP.
 The proposal object is byte-identical before and after execution (pinned
 by tests).
 
+## 3b. Idempotency and single-use approvals
+
+* **Single-use approval.** `EngineRuntime.execute_approved()` takes the last
+  approved proposal and risk decision and clears them *before* doing anything
+  else. Every attempt — success, refusal, engine stopped, halt, expiry —
+  consumes the approval; a second call fails with "no proposal to execute".
+* **Expiry.** An approved proposal past `expires_at` is refused as
+  `proposal_expired`, and the refusal is journaled (`NOT_ATTEMPTED`).
+* **Idempotency by `request_id`.** `ExecutionService.execute()` first asks the
+  journal for an earlier record of the same `request_id` that *reached the
+  broker* (`FILLED`, `PARTIALLY_FILLED`, `ACCEPTED`, `UNKNOWN`, `SEND_FAILED`,
+  `REJECTED_BY_BROKER`, `CHECK_FAILED`). If found, the new call is rejected as
+  `duplicate_request` (fresh `NOT_ATTEMPTED` / `BLOCKED` result, no tickets or
+  fill price copied) and the broker is never contacted. `NOT_ATTEMPTED` and
+  `DRY_RUN` records do **not** count, so DRY_RUN -> DEMO for the same
+  proposal, or "trading was disabled, now enabled", remain possible.
+* **Durability.** `python -m app.control` uses `SQLiteExecutionJournal` and
+  `SQLiteDecisionJournal` under `DATA_DIR` (`executions.db`, `decisions.db`),
+  so the duplicate guard survives restarts. The execution journal is
+  append-only: rejected duplicates are recorded too. The in-memory journal
+  (tests, embedded use) keeps only its most recent 1000 records, so its
+  duplicate window is bounded.
+* **Serialization.** One re-entrant lock covers `evaluate_cycle` and
+  `execute_approved`; control operations (stop, emergency stop, kill switch)
+  deliberately do **not** take it, so they never wait behind a slow broker call.
+
 ## 4. DRY_RUN (same pipeline, zero orders)
 
 With `DRY_RUN=true` the service runs the identical pipeline — request

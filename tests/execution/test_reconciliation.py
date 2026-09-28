@@ -294,12 +294,20 @@ class TestGuardIntegrationWithService:
         guard.record(Reconciler(broker, journal).reconcile(now=REF))
         assert guard.execution_allowed is False
 
-        second = service.execute(make_request(proposal, decision), decision)
+        # a DISTINCT request_id, so the idempotency guard cannot mask the
+        # reconciliation guard under test
+        second_request = make_request(proposal, decision).model_copy(
+            update={"request_id": "req-distinct-after-mismatch"}
+        )
+        second = service.execute(second_request, decision)
         assert second.status is ExecutionStatus.NOT_ATTEMPTED
-        # Idempotency is the earlier, stronger guard: the same request cannot
-        # be replayed even after a reconciliation mismatch.
-        assert "duplicate_request" in second.message
+        assert "reconciliation_halt" in second.message
         assert len(fake.order_sends) == 1  # no second order was sent
+
+        # ... and replaying the ORIGINAL request is refused too (idempotency)
+        replay = service.execute(make_request(proposal, decision), decision)
+        assert replay.status is ExecutionStatus.NOT_ATTEMPTED
+        assert len(fake.order_sends) == 1
 
 
 class TestEvents:

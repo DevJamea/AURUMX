@@ -46,9 +46,16 @@ def main(argv: list[str] | None = None) -> int:
     from app.brokers.mt5 import MT5Broker
     from app.control.api import LocalControlAPI
     from app.control.runtime import EngineRuntime
+    from app.storage import build_persistent_journals
 
+    decision_journal, execution_journal = build_persistent_journals(config.data_dir)
     broker = MT5Broker.from_config(config)
-    runtime = EngineRuntime(config, broker)
+    runtime = EngineRuntime(
+        config,
+        broker,
+        decision_journal=decision_journal,
+        execution_journal=execution_journal,
+    )
     api = LocalControlAPI(
         runtime,
         host=args.host or config.control_api_host,
