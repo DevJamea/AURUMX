@@ -6,3 +6,6 @@ risk events, system events, config changes), ``repositories`` (the only code
 allowed to touch the database).
 """
 
+from app.storage.execution_journal import SQLiteExecutionJournal
+
+__all__ = ["SQLiteExecutionJournal"]

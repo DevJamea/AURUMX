@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from threading import RLock
 
 from app.brokers.interface import BrokerInterface
 from app.control.errors import EngineNotStartedError, ExecutionRefused
@@ -121,6 +122,9 @@ class EngineRuntime:
         self._last_risk_decision = None
         self._symbol: str | None = None
         self._account: AccountSnapshot | None = None
+        # ThreadingHTTPServer dispatches requests concurrently; all stateful
+        # trading operations share one re-entrant critical section.
+        self._operation_lock = RLock()
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -207,6 +211,10 @@ class EngineRuntime:
     # the analysis cycle (never executes)
     # ------------------------------------------------------------------
     def evaluate_cycle(self) -> dict:
+        with self._operation_lock:
+            return self._evaluate_cycle_locked()
+
+    def _evaluate_cycle_locked(self) -> dict:
         if not self.control.started:
             raise EngineNotStartedError("engine is stopped — POST /control/start first")
 
@@ -242,6 +250,17 @@ class EngineRuntime:
     # the single, explicit execution path
     # ------------------------------------------------------------------
     def execute_approved(self) -> ExecutionResult:
+        with self._operation_lock:
+            return self._execute_approved_locked()
+
+    def _execute_approved_locked(self) -> ExecutionResult:
+        # Approval is single-use, including blocked and exceptional attempts.
+        proposal = self._last_proposal
+        risk_decision = self._last_risk_decision
+        self._last_proposal = None
+        self._last_risk_decision = None
+        if proposal is not None and proposal.is_expired(self.clock()):
+            raise ExecutionRefused("proposal_expired: approved proposal has expired")
         if not self.control.started:
             raise EngineNotStartedError("engine is stopped — POST /control/start first")
         halts = self.control.halt_flags()
@@ -251,23 +270,23 @@ class EngineRuntime:
                 "operator halt is active — execution refused "
                 "(reset via POST /control/reset_kill_switch)"
             )
-        if self._last_proposal is None or self._last_risk_decision is None:
+        if proposal is None or risk_decision is None:
             raise ExecutionRefused("no proposal to execute — run a cycle first")
-        if not self._last_risk_decision.approved:
+        if not risk_decision.approved:
             raise ExecutionRefused(
-                f"last risk decision was {self._last_risk_decision.action.value} — "
+                f"last risk decision was {risk_decision.action.value} — "
                 "only APPROVED proposals are executable"
             )
 
         request = ExecutionRequest.from_proposal(
-            self._last_proposal,
-            risk_decision_id=self._last_risk_decision.gate_decision_id,
+            proposal,
+            risk_decision_id=risk_decision.gate_decision_id,
             deviation_points=self.execution_service.config.deviation_points,
             type_filling=self.execution_service.config.type_filling,
         )
         self.system_state = SystemState.EXECUTING
         try:
-            return self.execution_service.execute(request, self._last_risk_decision)
+            return self.execution_service.execute(request, risk_decision)
         finally:
             self.system_state = SystemState.CONNECTED
 
