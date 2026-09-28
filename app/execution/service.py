@@ -169,6 +169,18 @@ class ExecutionService:
         self._emit(EXECUTION_REQUESTED, request)
         now = self._clock()
 
+        # Idempotency is checked before every other gate.  The journal is the
+        # authority, so this also survives process restarts.
+        prior = self._journal.by_request_id(request.request_id)
+        if prior is not None:
+            duplicate = prior.model_copy(update={
+                "status": ExecutionStatus.NOT_ATTEMPTED,
+                "message": "duplicate_request: request_id has already been attempted",
+                "reasons": ["duplicate_request"],
+                "timestamp": now,
+            })
+            return self._finish(request, duplicate, now, event=EXECUTION_REJECTED)
+
         # ---- 1. risk-decision verification (spec §11) ---------------------
         reason = self._verify_decision(request, decision)
         if reason is not None:

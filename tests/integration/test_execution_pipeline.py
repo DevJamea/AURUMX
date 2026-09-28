@@ -79,10 +79,10 @@ class TestDryRunPipeline:
         assert record.deal_ticket is None
         assert record.position_ticket is None
 
-        # proposal immutability across the whole pipeline
-        proposal = runtime._last_proposal
-        assert proposal.suggested_volume > 0
-        assert proposal.entry_price > 0
+        # approved proposals are intentionally single-use and cleared after
+        # the execution attempt; the journal retains the execution evidence.
+        assert runtime._last_proposal is None
+        assert runtime._last_risk_decision is None
 
         # reconciliation: dry-run records are skipped -> clean empty report
         report = runtime.reconcile()

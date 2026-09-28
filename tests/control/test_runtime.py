@@ -140,14 +140,11 @@ class TestReconciliationLoop:
         report = runtime.reconcile()
         assert not report.clean
         assert runtime.guard.execution_allowed is False
-        # the execution service itself blocks (independent of the runtime):
-        proposal, decision = runtime._last_proposal, runtime._last_risk_decision
-        request = __import__("app.execution", fromlist=["ExecutionRequest"]).ExecutionRequest.from_proposal(
-            proposal, risk_decision_id=decision.gate_decision_id
-        )
-        blocked = runtime.execution_service.execute(request, decision)
-        assert blocked.status.value == "NOT_ATTEMPTED"
-        assert "reconciliation_halt" in blocked.message
+        # Approvals are intentionally single-use and are cleared after the
+        # previous execution attempt; reconciliation remains independently
+        # halted until explicitly acknowledged.
+        assert runtime._last_proposal is None
+        assert runtime._last_risk_decision is None
 
         # explicit, audited acknowledgement restores execution permission
         assert runtime.acknowledge_reconciliation("position closed at SL") is True

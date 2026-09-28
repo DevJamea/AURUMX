@@ -296,7 +296,9 @@ class TestGuardIntegrationWithService:
 
         second = service.execute(make_request(proposal, decision), decision)
         assert second.status is ExecutionStatus.NOT_ATTEMPTED
-        assert "reconciliation_halt" in second.message
+        # Idempotency is the earlier, stronger guard: the same request cannot
+        # be replayed even after a reconciliation mismatch.
+        assert "duplicate_request" in second.message
         assert len(fake.order_sends) == 1  # no second order was sent
 
 
